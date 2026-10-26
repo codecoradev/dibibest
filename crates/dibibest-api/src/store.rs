@@ -82,13 +82,14 @@ impl Store {
             return Err(CreateErr::LimitReached);
         }
         c.execute(
-            "INSERT INTO projects VALUES(?1,?2,?3,?4,strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
+            "INSERT INTO projects(id,owner_email,name,erdjson,updated_at) VALUES(?1,?2,?3,?4,strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
             params![id, owner, name, erdjson],
         )
         .map_err(CreateErr::Db)?;
         Ok(())
     }
 
+    /// A stored document that no longer parses surfaces as `FromSqlConversionFailure`.
     pub fn get(&self, owner: &str, id: &str) -> rusqlite::Result<Option<Project>> {
         self.conn()
             .query_row(
@@ -96,10 +97,17 @@ impl Store {
                 params![id, owner],
                 |r| {
                     let raw: String = r.get(2)?;
+                    let erdjson = serde_json::from_str(&raw).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            2,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
                     Ok(Project {
                         id: r.get(0)?,
                         name: r.get(1)?,
-                        erdjson: serde_json::from_str(&raw).unwrap_or_default(),
+                        erdjson,
                         updated_at: r.get(3)?,
                     })
                 },
@@ -116,7 +124,7 @@ impl Store {
         erdjson: &str,
     ) -> rusqlite::Result<bool> {
         Ok(self.conn().execute(
-            "UPDATE projects SET name=?3, erdjson=?4, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?1 AND owner_email=?2",
+            "UPDATE projects SET name=?3, erdjson=?4, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND owner_email=?2",
             params![id, owner, name, erdjson],
         )? > 0)
     }

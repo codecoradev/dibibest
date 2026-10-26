@@ -5,25 +5,32 @@ use crate::session::{derive_key, now, pkce_challenge, random_token, sign, verify
 use crate::store::{CreateErr, Store, MAX_PROJECT_BYTES};
 use axum::{
     extract::{DefaultBodyLimit, FromRequestParts, Path, Query, State},
-    http::{header, request::Parts, HeaderMap, StatusCode},
+    http::{header, request::Parts, HeaderMap, HeaderValue, StatusCode},
     response::{AppendHeaders, IntoResponse, Redirect, Response},
     routing::{get, post},
     Json, Router,
 };
 use serde_json::{json, Value};
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use subtle::ConstantTimeEq;
+use tokio::sync::RwLock;
 
 const SESSION_COOKIE: &str = "dibibest_session";
 const PKCE_COOKIE: &str = "dibibest_pkce";
 const SESSION_TTL: u64 = 7 * 24 * 3600;
 const PKCE_TTL: u64 = 600;
+const DISCOVERY_TTL: Duration = Duration::from_secs(600);
 
 pub struct AppState {
     pub oidc: Option<Oidc>,
     key: [u8; 32],
     store: Store,
     http: reqwest::Client,
+    discovery: RwLock<Option<(Instant, Value)>>,
 }
 
 impl AppState {
@@ -39,6 +46,7 @@ impl AppState {
             key,
             store,
             http,
+            discovery: RwLock::new(None),
         })
     }
 }
@@ -93,9 +101,11 @@ fn set_cookie(o: &Oidc, name: &str, value: &str, max_age: u64) -> String {
 }
 
 fn session_email(s: &AppState, h: &HeaderMap) -> Option<String> {
-    s.oidc.as_ref()?;
+    let o = s.oidc.as_ref()?;
     let v = verify(&s.key, &cookie_value(h, SESSION_COOKIE)?)?;
-    v.get("email")?.as_str().map(str::to_string)
+    let email = v.get("email")?.as_str()?;
+    // re-check on every request so removed users lose access
+    o.allows(email).then(|| email.to_string())
 }
 
 /// Extractor: the signed-in email. 404 when auth is off, 401 without a valid session.
@@ -121,6 +131,13 @@ pub fn router(state: S) -> Router {
         .route("/api/projects", get(list).post(create))
         .route("/api/projects/{id}", get(read).put(update).delete(remove))
         .layer(DefaultBodyLimit::max(MAX_PROJECT_BYTES * 2))
+        .layer(axum::middleware::map_response(
+            |mut r: Response| async move {
+                r.headers_mut()
+                    .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+                r
+            },
+        ))
         .with_state(state)
 }
 
@@ -152,7 +169,26 @@ async fn landing(State(s): State<S>, h: HeaderMap) -> Result<Response, ApiErr> {
     .into_response())
 }
 
+/// Cached discovery doc (10 min). On expiry refetch; if that fails, a stale doc beats an outage.
 async fn discover(s: &AppState, o: &Oidc) -> Result<Value, ApiErr> {
+    if let Some((at, d)) = &*s.discovery.read().await {
+        if at.elapsed() < DISCOVERY_TTL {
+            return Ok(d.clone());
+        }
+    }
+    match fetch_discovery(s, o).await {
+        Ok(d) => {
+            *s.discovery.write().await = Some((Instant::now(), d.clone()));
+            Ok(d)
+        }
+        Err(e) => match &*s.discovery.read().await {
+            Some((_, d)) => Ok(d.clone()),
+            None => Err(e),
+        },
+    }
+}
+
+async fn fetch_discovery(s: &AppState, o: &Oidc) -> Result<Value, ApiErr> {
     let bad = |_| ApiErr::new(StatusCode::BAD_GATEWAY, "identity provider unreachable");
     let r = s
         .http
@@ -166,7 +202,14 @@ async fn discover(s: &AppState, o: &Oidc) -> Result<Value, ApiErr> {
             "identity provider discovery failed",
         ));
     }
-    r.json().await.map_err(bad)
+    let d: Value = r.json().await.map_err(bad)?;
+    if d["issuer"].as_str().map(|i| i.trim_end_matches('/')) != Some(o.issuer.as_str()) {
+        return Err(ApiErr::new(
+            StatusCode::BAD_GATEWAY,
+            "provider issuer mismatch",
+        ));
+    }
+    Ok(d)
 }
 
 fn endpoint<'a>(d: &'a Value, k: &str) -> Result<&'a str, ApiErr> {
@@ -208,7 +251,7 @@ async fn exchange(
     d: &Value,
     code: &str,
     verifier: &str,
-) -> Result<String, ApiErr> {
+) -> Result<(String, bool), ApiErr> {
     let bad = |m: &'static str| move |_| ApiErr::new(StatusCode::BAD_GATEWAY, m);
     let redirect_uri = format!("{}/auth/callback", o.public_url);
     let form = [
@@ -247,11 +290,13 @@ async fn exchange(
         return Err(ApiErr::new(StatusCode::BAD_GATEWAY, "userinfo rejected"));
     }
     let u: Value = r.json().await.map_err(bad("bad userinfo response"))?;
-    u["email"]
+    let email = u["email"]
         .as_str()
         .filter(|e| !e.is_empty())
         .map(str::to_string)
-        .ok_or_else(|| ApiErr::new(StatusCode::BAD_GATEWAY, "identity has no email"))
+        .ok_or_else(|| ApiErr::new(StatusCode::BAD_GATEWAY, "identity has no email"))?;
+    // absent claim = allow; an explicit `false` = deny
+    Ok((email, u["email_verified"].as_bool() != Some(false)))
 }
 
 async fn callback(
@@ -280,9 +325,10 @@ async fn callback(
         .get("code")
         .ok_or_else(|| ApiErr::new(StatusCode::BAD_REQUEST, "missing code"))?;
     let d = discover(&s, o).await?;
-    let email = exchange(&s, o, &d, code, pkce["verifier"].as_str().unwrap_or("")).await?;
+    let (email, verified) =
+        exchange(&s, o, &d, code, pkce["verifier"].as_str().unwrap_or("")).await?;
     let clear_pkce = set_cookie(o, PKCE_COOKIE, "", 0);
-    if !o.allows(&email) {
+    if !verified || !o.allows(&email) {
         let page = html(&format!(
             "<h1>Not authorized</h1><p>{} is not allowed to use this instance.</p><form method=post action=\"/auth/logout\"><button>Log out</button></form>",
             esc(&email)
@@ -364,7 +410,12 @@ async fn create(
         Err(CreateErr::Db(e)) => return Err(db(e)),
     }
     let p = s.store.get(&me, &id).map_err(db)?;
-    Ok((StatusCode::OK, Json(p)).into_response())
+    Ok((
+        StatusCode::CREATED,
+        [(header::LOCATION, format!("/api/projects/{id}"))],
+        Json(p),
+    )
+        .into_response())
 }
 
 async fn read(
@@ -375,7 +426,16 @@ async fn read(
     let p = s
         .store
         .get(&me, &id)
-        .map_err(db)?
+        .map_err(|e| match e {
+            rusqlite::Error::FromSqlConversionFailure(..) => {
+                eprintln!("corrupt project {id}: {e}");
+                ApiErr::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "stored document is corrupt",
+                )
+            }
+            e => db(e),
+        })?
         .ok_or_else(|| ApiErr::new(StatusCode::NOT_FOUND, "project not found"))?;
     Ok(Json(p).into_response())
 }

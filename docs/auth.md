@@ -22,7 +22,7 @@ a JSON 404.
    | `OIDC_CLIENT_ID` | yes | Client id from the registration |
    | `OIDC_CLIENT_SECRET` | yes | Client secret (sent with `client_secret_post`) |
    | `PUBLIC_URL` | yes | Public origin of this server, no trailing path |
-   | `SESSION_SECRET` | yes | Any long random string; hashed to 32 bytes for HMAC-SHA256 |
+   | `SESSION_SECRET` | yes | At least 32 bytes; generate with `openssl rand -base64 32`. Shorter counts as not set (feature OFF, warning on stderr). Hashed to 32 bytes for HMAC-SHA256 |
    | `ALLOWED_EMAILS` | no | Comma-separated allowlist |
    | `DIBIBEST_API_DB` | no | SQLite path (default `./dibibest.db`) |
    | `DIBIBEST_API_ADDR` | no | Listen address (default `127.0.0.1:8787`) |
@@ -60,7 +60,10 @@ handling: after 7 days the user signs in again.
 ## Allowlist
 
 `ALLOWED_EMAILS` empty: any identity the OP authenticates may sign in.
-Non-empty: the userinfo email must match an entry, case-insensitively. A denied
+Non-empty: the userinfo email must match an entry, case-insensitively. The
+list is re-checked on **every** authenticated request, so a user removed from
+it loses access on their next request. A userinfo `email_verified: false` is
+denied too (an absent claim is allowed). A denied
 user sees a "Not authorized" page (HTTP 403) with a log-out button and gets
 **no** session cookie.
 
@@ -88,3 +91,12 @@ session's email; another user's project id returns 404. Errors are JSON
 - 512 KB of ERD-JSON per project (413 above that)
 - 100 projects per user (409 when full)
 - name 1–200 characters (400 otherwise)
+
+## Known tradeoffs
+
+- **Stateless sessions.** Signed 7-day cookies; logout clears the cookie only.
+  Server-side revocation = rotate `SESSION_SECRET` (signs everyone out). A
+  per-boot instance ID was considered and rejected for v1 simplicity.
+- **Synchronous SQLite.** One connection behind a mutex, used directly on async
+  workers. Adequate for a single instance at small-team scale; `spawn_blocking`
+  or a connection pool is the upgrade path.

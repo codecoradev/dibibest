@@ -17,11 +17,13 @@ use tokio::net::TcpListener;
 
 const CID: &str = "test-client";
 const CSEC: &str = "test-client-secret";
-const SESSION_SECRET: &str = "test-session-secret";
+const SESSION_SECRET: &str = "test-session-secret-0123456789abcdef";
 
 struct Op {
     base: String,
     email: String,
+    verified: Option<bool>,
+    issuer: Option<String>,
     codes: Mutex<HashMap<String, String>>, // code -> challenge
 }
 
@@ -30,11 +32,17 @@ async fn serve(l: TcpListener, r: Router) {
 }
 
 async fn spawn_op(email: &str) -> String {
+    spawn_op_with(email, None, None).await
+}
+
+async fn spawn_op_with(email: &str, verified: Option<bool>, issuer: Option<&str>) -> String {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", l.local_addr().unwrap());
     let op = Arc::new(Op {
         base: base.clone(),
         email: email.into(),
+        verified,
+        issuer: issuer.map(Into::into),
         codes: Default::default(),
     });
     let r = Router::new()
@@ -42,7 +50,7 @@ async fn spawn_op(email: &str) -> String {
             "/.well-known/openid-configuration",
             get(|State(o): State<Arc<Op>>| async move {
                 Json(json!({
-                    "issuer": o.base,
+                    "issuer": o.issuer.clone().unwrap_or(o.base.clone()),
                     "authorization_endpoint": format!("{}/authorize", o.base),
                     "token_endpoint": format!("{}/token", o.base),
                     "userinfo_endpoint": format!("{}/userinfo", o.base),
@@ -103,7 +111,11 @@ async fn spawn_op(email: &str) -> String {
                 {
                     return Err(StatusCode::UNAUTHORIZED);
                 }
-                Ok(Json(json!({ "sub": "u1", "email": o.email })))
+                let mut u = json!({ "sub": "u1", "email": o.email });
+                if let Some(v) = o.verified {
+                    u["email_verified"] = json!(v);
+                }
+                Ok(Json(u))
             }),
         )
         .with_state(op);
@@ -112,6 +124,10 @@ async fn spawn_op(email: &str) -> String {
 }
 
 async fn spawn_api(issuer: Option<&str>, allow: &str) -> String {
+    spawn_api_db(issuer, allow, ":memory:").await
+}
+
+async fn spawn_api_db(issuer: Option<&str>, allow: &str, db: &str) -> String {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", l.local_addr().unwrap());
     let oidc = issuer.map(|i| {
@@ -127,7 +143,7 @@ async fn spawn_api(issuer: Option<&str>, allow: &str) -> String {
     });
     serve(
         l,
-        app::router(app::AppState::new(oidc, Store::open(":memory:").unwrap())),
+        app::router(app::AppState::new(oidc, Store::open(db).unwrap())),
     )
     .await;
     base
@@ -220,9 +236,18 @@ async fn full_login_then_projects() {
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status(), 200);
+    assert_eq!(r.status(), 201);
+    let loc = r.headers()[header::LOCATION].to_str().unwrap().to_string();
     let p: Value = r.json().await.unwrap();
     assert_eq!(p["name"], "p1");
+    assert_eq!(loc, format!("/api/projects/{}", p["id"].as_str().unwrap()));
+    let r = c
+        .get(&url)
+        .header(header::COOKIE, &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
 
     // signed-in `/` redirects to /app
     let r = c
@@ -457,7 +482,7 @@ async fn projects_crud_scoping_and_caps() {
         )
         .await
         .unwrap();
-        assert_eq!(r.status(), 200);
+        assert_eq!(r.status(), 201);
     }
     let r = send(
         "POST".parse().unwrap(),
@@ -479,6 +504,89 @@ async fn projects_crud_scoping_and_caps() {
         .await
         .unwrap()
         .status(),
-        200
+        201
     );
+}
+
+#[tokio::test]
+async fn unverified_email_denied_and_no_session() {
+    let op = spawn_op_with("a@example.com", Some(false), None).await;
+    let api = spawn_api(Some(&op), "").await;
+    let r = sign_in(&api).await;
+    assert_eq!(r.status(), 403);
+    assert!(!set_cookies(&r)
+        .iter()
+        .any(|c| c.starts_with("dibibest_session=")));
+    assert!(r.text().await.unwrap().contains("Not authorized"));
+}
+
+#[tokio::test]
+async fn verified_email_true_is_allowed() {
+    let op = spawn_op_with("a@example.com", Some(true), None).await;
+    let api = spawn_api(Some(&op), "").await;
+    assert_eq!(sign_in(&api).await.status(), 303);
+}
+
+#[tokio::test]
+async fn discovery_issuer_mismatch_is_bad_gateway() {
+    let op = spawn_op_with("a@example.com", None, Some("https://evil.example")).await;
+    let api = spawn_api(Some(&op), "").await;
+    let r = client()
+        .get(format!("{api}/auth/login"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 502);
+    assert!(set_cookies(&r).is_empty());
+}
+
+#[tokio::test]
+async fn removed_from_allowlist_loses_access() {
+    let wide = spawn_api(Some("http://127.0.0.1:1"), "").await;
+    let narrow = spawn_api(Some("http://127.0.0.1:1"), "someone-else@example.com").await;
+    let ck = forged("a@example.com");
+    for (api, want) in [(&wide, 200), (&narrow, 401)] {
+        let r = client()
+            .get(format!("{api}/api/projects"))
+            .header(header::COOKIE, &ck)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), want, "{api}");
+    }
+}
+
+#[tokio::test]
+async fn corrupt_stored_document_is_500() {
+    let db = std::env::temp_dir().join(format!("dibibest-e2e-{}.db", session::random_token(6)));
+    let path = db.to_str().unwrap();
+    let api = spawn_api_db(Some("http://127.0.0.1:1"), "", path).await;
+    let (c, ck) = (client(), forged("a@example.com"));
+    let r = c
+        .post(format!("{api}/api/projects"))
+        .header(header::COOKIE, &ck)
+        .json(&json!({ "name": "p", "erdjson": {} }))
+        .send()
+        .await
+        .unwrap();
+    let id = r.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    rusqlite::Connection::open(path)
+        .unwrap()
+        .execute("UPDATE projects SET erdjson='{not json'", [])
+        .unwrap();
+    let r = c
+        .get(format!("{api}/api/projects/{id}"))
+        .header(header::COOKIE, &ck)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 500);
+    assert_eq!(
+        r.json::<Value>().await.unwrap(),
+        json!({ "error": "stored document is corrupt" })
+    );
+    let _ = std::fs::remove_file(db);
 }

@@ -11,6 +11,8 @@ pub struct Oidc {
     pub allowed_emails: Vec<String>,
 }
 
+const MIN_SECRET: usize = 32;
+
 /// Placeholder values copied from `.env.example` files count as unset.
 fn real(v: Option<String>) -> Option<String> {
     let v = v?.trim().to_string();
@@ -32,7 +34,14 @@ impl Oidc {
             client_id: real(get("OIDC_CLIENT_ID"))?,
             client_secret: real(get("OIDC_CLIENT_SECRET"))?,
             public_url: real(get("PUBLIC_URL"))?.trim_end_matches('/').to_string(),
-            session_secret: real(get("SESSION_SECRET"))?,
+            session_secret: real(get("SESSION_SECRET"))
+                .filter(|s| {
+                    let ok = s.len() >= MIN_SECRET;
+                    if !ok {
+                        eprintln!("SESSION_SECRET is shorter than {MIN_SECRET} bytes: auth disabled (use `openssl rand -base64 32`)");
+                    }
+                    ok
+                })?,
             allowed_emails: parse_allowlist(&get("ALLOWED_EMAILS").unwrap_or_default()),
         })
     }
@@ -57,7 +66,7 @@ mod tests {
             ("OIDC_CLIENT_ID", "cid"),
             ("OIDC_CLIENT_SECRET", "csec"),
             ("PUBLIC_URL", "https://app.example/"),
-            ("SESSION_SECRET", "sess"),
+            ("SESSION_SECRET", "0123456789abcdef0123456789abcdef"),
         ]
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -89,6 +98,12 @@ mod tests {
                 assert!(Oidc::from_lookup(env(&[(k, bad)])).is_none(), "{k}={bad}");
             }
         }
+    }
+
+    #[test]
+    fn short_session_secret_disables() {
+        assert!(Oidc::from_lookup(env(&[("SESSION_SECRET", &"s".repeat(31))])).is_none());
+        assert!(Oidc::from_lookup(env(&[("SESSION_SECRET", &"s".repeat(32))])).is_some());
     }
 
     #[test]
