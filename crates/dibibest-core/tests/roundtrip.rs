@@ -142,3 +142,56 @@ fn one_line_blocks_parse_and_round_trip() {
     assert!(c.output.contains("CREATE TABLE a"));
     assert!(c.output.contains("CREATE TABLE b"));
 }
+
+fn dbml_to_sql(src: &str) -> String {
+    Registry::with_defaults()
+        .convert_explicit(src, &FormatId::new("dbml"), &FormatId::new("sql"))
+        .expect("convert")
+        .output
+}
+
+#[test]
+fn block_borders_are_line_agnostic() {
+    // Bug A: inline column after `{`, rest on following lines.
+    let sql = dbml_to_sql("Table users { id integer [pk]\n  name varchar\n}\n");
+    assert!(
+        sql.contains("id integer") && sql.contains("name varchar"),
+        "{sql}"
+    );
+
+    // Bug B: last column shares the line with the closing `}`.
+    let sql = dbml_to_sql("Table users {\n  id integer [pk]\n  name varchar [not null] }\n");
+    assert!(
+        sql.contains("id integer") && sql.contains("name varchar NOT NULL"),
+        "{sql}"
+    );
+
+    // One-liner still works.
+    assert!(dbml_to_sql("Table a { id int [pk] }\n").contains("CREATE TABLE a"));
+
+    // Ref and Enum with content split from the braces.
+    let sql =
+        dbml_to_sql("Table a { id int [pk] }\nTable b { a_id int }\nRef r { b.a_id > a.id\n}\n");
+    assert!(sql.contains("FOREIGN KEY"), "{sql}");
+    let dbml = "Enum st { open\n  closed }\nTable t { s st }\n";
+    let reg = Registry::with_defaults();
+    let d = FormatId::new("dbml");
+    let once = reg.convert_explicit(dbml, &d, &d).unwrap().output;
+    assert!(once.contains("open") && once.contains("closed"), "{once}");
+    // idempotency: parse(emit(parse(x))) == parse(x)
+    let twice = reg.convert_explicit(&once, &d, &d).unwrap().output;
+    assert_eq!(once, twice);
+}
+
+#[test]
+fn block_border_error_reports_physical_line() {
+    let err = Registry::with_defaults()
+        .convert_explicit(
+            "Table t {\n  id int\n  !!! }\n",
+            &FormatId::new("dbml"),
+            &FormatId::new("sql"),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("line 3"), "{err}");
+}

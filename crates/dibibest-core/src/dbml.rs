@@ -42,27 +42,57 @@ impl Codec for DbmlCodec {
 
 const UNKNOWN: &str = "// unknown:";
 
-/// Split one-line blocks (`Table a { id integer [pk] }`) into three virtual
-/// lines so the line-based state machine handles agent-style one-liners.
-fn expand_one_line_blocks(src: &str) -> Vec<String> {
+/// Make the block grammar line-agnostic: move every `{` / `}` border onto its
+/// own virtual line so the line-based state machine sees the same shape
+/// whether braces share a line with content or not. Content after an opener's
+/// `{` and content before a closing `}` become separate lines.
+///
+/// Each virtual line carries its *physical* 1-based line number, so parse
+/// errors point at the line the user actually wrote.
+fn expand_block_borders(src: &str) -> Vec<(usize, String)> {
     let mut out = Vec::new();
-    for raw in src.lines() {
+    for (i, raw) in src.lines().enumerate() {
+        let n = i + 1;
         let t = raw.trim();
-        let opener = t.starts_with("Table ")
-            || t.starts_with("Enum ")
-            || t.starts_with("Project ")
-            || (t.starts_with("Ref ") && t.find('{') < t.find(':').or(Some(usize::MAX)));
-        if opener && t.ends_with('}') && t.contains('{') {
-            let brace = t.find('{').unwrap();
-            let header = t[..=brace].trim_end();
-            let body = t[brace + 1..t.len() - 1].trim();
-            out.push(header.to_string());
+        let code = strip_comment(t);
+        if code.is_empty() {
+            out.push((n, raw.to_string()));
+            continue;
+        }
+        let brace = outside_quotes(code)
+            .find(|&(_, c)| c == '{')
+            .map(|(i, _)| i);
+        let opener = brace.is_some()
+            && (code.starts_with("Table ")
+                || code.starts_with("Enum ")
+                || code.starts_with("Project ")
+                || (code.starts_with("Ref ") && !code[..brace.unwrap()].contains(':')));
+        let (header, tail) = match brace {
+            Some(b) if opener => (Some(code[..=b].trim_end()), code[b + 1..].trim()),
+            _ => (None, code),
+        };
+        if let Some(h) = header {
+            out.push((n, h.to_string()));
+        }
+        // A trailing `}` with more closers than openers closes the enclosing
+        // block; balanced pairs (`Note { … }`) stay on their line.
+        let (mut opens, mut closes) = (0, 0);
+        for (_, c) in outside_quotes(tail) {
+            opens += (c == '{') as i32;
+            closes += (c == '}') as i32;
+        }
+        if tail.len() > 1 && tail.ends_with('}') && closes > opens {
+            let body = tail[..tail.len() - 1].trim();
             if !body.is_empty() {
-                out.push(body.to_string());
+                out.push((n, body.to_string()));
             }
-            out.push("}".to_string());
+            out.push((n, "}".to_string()));
+        } else if header.is_some() {
+            if !tail.is_empty() {
+                out.push((n, tail.to_string()));
+            }
         } else {
-            out.push(raw.to_string());
+            out.push((n, raw.to_string()));
         }
     }
     out
@@ -91,11 +121,12 @@ fn parse_dbml(src: &str) -> Result<SchemaIR, CoreError> {
     let mut ir = SchemaIR::default();
     let mut block: Option<Block> = None;
 
-    for (lineno, raw) in expand_one_line_blocks(src).iter().enumerate() {
+    for (lineno, raw) in expand_block_borders(src) {
+        let raw = &raw;
         let line = raw.trim();
         let fail = |m: &str| CoreError::Parse {
             format: FMT,
-            message: format!("line {}: {}", lineno + 1, m),
+            message: format!("line {}: {}", lineno, m),
         };
 
         let mut closed = false;
