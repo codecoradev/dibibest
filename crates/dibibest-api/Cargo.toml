@@ -1,0 +1,25 @@
+[package]
+name = "dibibest-api"
+description = "OIDC relying party + saved-projects API for dibibest (feature OFF unless configured)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "dibibest-api"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+hmac = "0.12"
+subtle = "2"
+rand = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+
