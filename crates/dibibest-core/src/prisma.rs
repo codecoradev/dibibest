@@ -21,6 +21,10 @@ const PROJECT: &str = "// project:";
 const PROJECT_BODY: &str = "// project-body:";
 
 impl Codec for PrismaCodec {
+    fn scan(&self, src: &str) -> Option<crate::SourceCounts> {
+        Some(crate::scan::prisma(src))
+    }
+
     fn id(&self) -> &str {
         "prisma"
     }
