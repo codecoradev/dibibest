@@ -149,8 +149,20 @@ async fn spawn_api_db(issuer: Option<&str>, allow: &str, db: &str) -> String {
     base
 }
 
-fn client() -> reqwest::Client {
+/// Plain client: no browser-ish headers at all (no Origin, no Sec-Fetch-Site).
+fn bare() -> reqwest::Client {
     reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+}
+
+/// Same-origin browser stand-in so state-changing calls pass the CSRF guard.
+fn client() -> reqwest::Client {
+    let mut h = HeaderMap::new();
+    h.insert("sec-fetch-site", "same-origin".parse().unwrap());
+    reqwest::Client::builder()
+        .default_headers(h)
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap()
@@ -588,5 +600,95 @@ async fn corrupt_stored_document_is_500() {
         r.json::<Value>().await.unwrap(),
         json!({ "error": "stored document is corrupt" })
     );
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn csrf_guard_on_logout_and_api_writes() {
+    let api = spawn_api(Some("http://127.0.0.1:1"), "").await;
+    let ck = forged("a@example.com");
+    let body = json!({ "name": "p", "erdjson": {} });
+    let evil = "https://evil.example";
+    let post = |u: &str| bare().post(format!("{api}{u}")).header(header::COOKIE, &ck);
+
+    for (path, ok) in [("/api/projects", 201), ("/auth/logout", 303)] {
+        let req = |r: reqwest::RequestBuilder| r.json(&body).send();
+        let r = req(post(path).header(header::ORIGIN, evil)).await.unwrap();
+        assert_eq!(r.status(), 403, "{path} evil origin");
+        assert_eq!(
+            r.json::<Value>().await.unwrap(),
+            json!({ "error": "cross-origin request rejected" })
+        );
+        // both headers absent, or cross-site fetch metadata -> rejected
+        assert_eq!(req(post(path)).await.unwrap().status(), 403, "{path} bare");
+        let r = req(post(path).header("sec-fetch-site", "cross-site")).await;
+        assert_eq!(r.unwrap().status(), 403, "{path} cross-site");
+        // correct Origin, or no Origin + same-origin fetch metadata -> allowed
+        let r = req(post(path).header(header::ORIGIN, &api)).await.unwrap();
+        assert_eq!(r.status(), ok, "{path} good origin");
+        let r = req(post(path).header("sec-fetch-site", "same-origin")).await;
+        assert_eq!(r.unwrap().status(), ok, "{path} same-origin");
+    }
+
+    // PUT/DELETE are guarded too
+    for m in ["PUT", "DELETE"] {
+        let r = bare()
+            .request(m.parse().unwrap(), format!("{api}/api/projects/x"))
+            .header(header::COOKIE, &ck)
+            .header(header::ORIGIN, evil)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 403, "{m}");
+    }
+}
+
+#[tokio::test]
+async fn mixed_case_email_is_normalized_everywhere() {
+    let op = spawn_op("Alice@Example.COM").await;
+    let db = std::env::temp_dir().join(format!("dibibest-e2e-{}.db", session::random_token(6)));
+    let path = db.to_str().unwrap();
+    // allowlist is lowercase; the OP returns mixed case
+    let api = spawn_api_db(Some(&op), "alice@example.com", path).await;
+    let r = sign_in(&api).await;
+    assert_eq!(r.status(), 303);
+    let cookie = pair(
+        set_cookies(&r)
+            .iter()
+            .find(|c| c.starts_with("dibibest_session="))
+            .unwrap(),
+    );
+    let r = client()
+        .post(format!("{api}/api/projects"))
+        .header(header::COOKIE, &cookie)
+        .json(&json!({ "name": "p", "erdjson": {} }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 201);
+    let owner: String = rusqlite::Connection::open(path)
+        .unwrap()
+        .query_row("SELECT owner_email FROM projects", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(owner, "alice@example.com");
+    // a login that returns the lowercase variant sees the same project
+    let op2 = spawn_op("alice@example.com").await;
+    let api2 = spawn_api_db(Some(&op2), "", path).await;
+    let ck2 = pair(
+        set_cookies(&sign_in(&api2).await)
+            .iter()
+            .find(|c| c.starts_with("dibibest_session="))
+            .unwrap(),
+    );
+    let l: Value = client()
+        .get(format!("{api2}/api/projects"))
+        .header(header::COOKIE, ck2)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(l["projects"].as_array().unwrap().len(), 1);
     let _ = std::fs::remove_file(db);
 }

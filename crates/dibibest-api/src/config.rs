@@ -27,13 +27,33 @@ pub fn parse_allowlist(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// https only; plain http is tolerated for loopback hosts (dev / mock-OP setups).
+fn scheme_ok(name: &str, url: &str) -> bool {
+    let ok = url.starts_with("https://")
+        || ["localhost", "127.0.0.1", "[::1]"].iter().any(|h| {
+            url.strip_prefix("http://")
+                .and_then(|r| r.strip_prefix(h))
+                .is_some_and(|r| r.is_empty() || r.starts_with([':', '/']))
+        });
+    if !ok {
+        eprintln!("{name} must start with https:// (http only for loopback): auth disabled");
+    }
+    ok
+}
+
 impl Oidc {
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Option<Self> {
         Some(Self {
-            issuer: real(get("OIDC_ISSUER"))?.trim_end_matches('/').to_string(),
+            issuer: real(get("OIDC_ISSUER"))
+                .filter(|v| scheme_ok("OIDC_ISSUER", v))?
+                .trim_end_matches('/')
+                .to_string(),
             client_id: real(get("OIDC_CLIENT_ID"))?,
             client_secret: real(get("OIDC_CLIENT_SECRET"))?,
-            public_url: real(get("PUBLIC_URL"))?.trim_end_matches('/').to_string(),
+            public_url: real(get("PUBLIC_URL"))
+                .filter(|v| scheme_ok("PUBLIC_URL", v))?
+                .trim_end_matches('/')
+                .to_string(),
             session_secret: real(get("SESSION_SECRET"))
                 .filter(|s| {
                     let ok = s.len() >= MIN_SECRET;
@@ -104,6 +124,28 @@ mod tests {
     fn short_session_secret_disables() {
         assert!(Oidc::from_lookup(env(&[("SESSION_SECRET", &"s".repeat(31))])).is_none());
         assert!(Oidc::from_lookup(env(&[("SESSION_SECRET", &"s".repeat(32))])).is_some());
+    }
+
+    #[test]
+    fn scheme_hardening() {
+        let on = |k, v| Oidc::from_lookup(env(&[(k, v)])).is_some();
+        for k in ["OIDC_ISSUER", "PUBLIC_URL"] {
+            assert!(on(k, "https://dibibest.example.com"), "{k} https");
+            for v in [
+                "http://localhost:3000",
+                "http://127.0.0.1:8080",
+                "http://[::1]:1",
+            ] {
+                assert!(on(k, v), "{k}={v}");
+            }
+            for v in [
+                "http://dibibest.example.com",
+                "http://localhost.evil.example",
+                "ftp://localhost",
+            ] {
+                assert!(!on(k, v), "{k}={v}");
+            }
+        }
     }
 
     #[test]

@@ -100,3 +100,14 @@ session's email; another user's project id returns 404. Errors are JSON
 - **Synchronous SQLite.** One connection behind a mutex, used directly on async
   workers. Adequate for a single instance at small-team scale; `spawn_blocking`
   or a connection pool is the upgrade path.
+- **`email_verified` absent = verified.** A missing claim is treated as
+  verified; only an explicit `false` denies. Acceptable because the IdP is
+  first-party and asserts the claim; revisit if a third-party IdP is ever
+  configured.
+- **Identity key is the normalized (lowercased) email, not the OIDC `sub`.**
+  Known limitation: an email change at the IdP orphans projects. Follow-up: key
+  projects by `sub` (stable), keeping email for display and the allowlist.
+- **CSRF on state-changing routes** (`POST /auth/logout` and every non-GET
+  `/api/*`) = `Origin` must match `PUBLIC_URL`, or, when `Origin` is absent,
+  `Sec-Fetch-Site` must be `same-origin`/`same-site`; otherwise 403. This is
+  defense-in-depth on top of `SameSite=Lax` cookies.

@@ -103,9 +103,9 @@ fn set_cookie(o: &Oidc, name: &str, value: &str, max_age: u64) -> String {
 fn session_email(s: &AppState, h: &HeaderMap) -> Option<String> {
     let o = s.oidc.as_ref()?;
     let v = verify(&s.key, &cookie_value(h, SESSION_COOKIE)?)?;
-    let email = v.get("email")?.as_str()?;
+    let email = v.get("email")?.as_str()?.to_lowercase();
     // re-check on every request so removed users lose access
-    o.allows(email).then(|| email.to_string())
+    o.allows(&email).then_some(email)
 }
 
 /// Extractor: the signed-in email. 404 when auth is off, 401 without a valid session.
@@ -121,6 +121,38 @@ impl FromRequestParts<S> for Auth {
     }
 }
 
+/// CSRF defense-in-depth for state-changing requests: `Origin` must equal the
+/// public origin; without `Origin`, `Sec-Fetch-Site` must be same-origin/same-site.
+async fn csrf_guard(
+    State(s): State<S>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let Some(o) = &s.oidc else {
+        return next.run(req).await; // feature off: handlers 404
+    };
+    if matches!(
+        *req.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+    ) {
+        return next.run(req).await;
+    }
+    let h = req.headers();
+    let ok = match h.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        Some(origin) => reqwest::Url::parse(&o.public_url)
+            .is_ok_and(|u| u.origin().ascii_serialization() == origin),
+        None => matches!(
+            h.get("sec-fetch-site").and_then(|v| v.to_str().ok()),
+            Some("same-origin" | "same-site")
+        ),
+    };
+    if ok {
+        next.run(req).await
+    } else {
+        ApiErr::new(StatusCode::FORBIDDEN, "cross-origin request rejected").into_response()
+    }
+}
+
 pub fn router(state: S) -> Router {
     Router::new()
         .route("/", get(landing))
@@ -130,6 +162,10 @@ pub fn router(state: S) -> Router {
         .route("/auth/logout", post(logout))
         .route("/api/projects", get(list).post(create))
         .route("/api/projects/{id}", get(read).put(update).delete(remove))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            csrf_guard,
+        ))
         .layer(DefaultBodyLimit::max(MAX_PROJECT_BYTES * 2))
         .layer(axum::middleware::map_response(
             |mut r: Response| async move {
@@ -290,10 +326,11 @@ async fn exchange(
         return Err(ApiErr::new(StatusCode::BAD_GATEWAY, "userinfo rejected"));
     }
     let u: Value = r.json().await.map_err(bad("bad userinfo response"))?;
+    // normalized once here: session, allowlist and owner_email all use this value
     let email = u["email"]
         .as_str()
+        .map(|e| e.trim().to_lowercase())
         .filter(|e| !e.is_empty())
-        .map(str::to_string)
         .ok_or_else(|| ApiErr::new(StatusCode::BAD_GATEWAY, "identity has no email"))?;
     // absent claim = allow; an explicit `false` = deny
     Ok((email, u["email_verified"].as_bool() != Some(false)))
