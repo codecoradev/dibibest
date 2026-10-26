@@ -18,6 +18,10 @@ impl Codec for DbmlCodec {
         "dbml"
     }
 
+    fn scan(&self, src: &str) -> Option<crate::SourceCounts> {
+        Some(crate::scan::dbml(src))
+    }
+
     fn caps(&self) -> Caps {
         Caps {
             indexes: true,

@@ -53,6 +53,10 @@ impl SqlCodec {
 const FMT: &str = "sql";
 
 impl Codec for SqlCodec {
+    fn scan(&self, src: &str) -> Option<crate::SourceCounts> {
+        Some(crate::scan::sql(src))
+    }
+
     fn id(&self) -> &str {
         match self.dialect {
             Dialect::Postgres => "sql",

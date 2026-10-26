@@ -130,6 +130,10 @@ fn err(message: impl Into<String>) -> CoreError {
 }
 
 impl Codec for ErdJsonCodec {
+    fn scan(&self, src: &str) -> Option<crate::SourceCounts> {
+        crate::scan::erdjson(src)
+    }
+
     fn id(&self) -> &str {
         FMT
     }
