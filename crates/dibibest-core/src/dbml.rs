@@ -14,6 +14,10 @@ pub struct DbmlCodec;
 const FMT: &str = "dbml";
 
 impl Codec for DbmlCodec {
+    fn scan(&self, src: &str) -> Option<crate::SourceCounts> {
+        Some(crate::scan::dbml(src))
+    }
+
     fn id(&self) -> &str {
         "dbml"
     }

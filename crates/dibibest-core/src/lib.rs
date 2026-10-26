@@ -9,6 +9,7 @@ pub mod erdjson;
 pub mod ir;
 pub mod prisma;
 pub mod registry;
+pub mod scan;
 pub mod sql;
 
 pub use ir::{Column, IndexDef, Ref, RefKind, SchemaIR, Table};
@@ -16,6 +17,7 @@ pub use registry::{
     convert_explicit, default_registry, detect_format, registry_convert, Conversion, Fidelity,
     FormatId, Outcome, Registry,
 };
+pub use scan::SourceCounts;
 
 /// Every fact a caller must know to use a codec: its id, its feature surface, and
 /// the two directions it serves. This is the seam format plugins plug into.
@@ -26,6 +28,11 @@ pub trait Codec {
     fn caps(&self) -> Caps;
     fn parse(&self, src: &str) -> Result<SchemaIR, CoreError>;
     fn emit(&self, ir: &SchemaIR) -> Result<String, CoreError>;
+    /// Parser-independent entity counts declared by the SOURCE text (see
+    /// [`scan`]). `None` = this codec has no scan; fidelity falls back to the IR.
+    fn scan(&self, _src: &str) -> Option<SourceCounts> {
+        None
+    }
 }
 
 /// Honest feature surface of a codec. A capability listed as `false` means

@@ -3,7 +3,7 @@
 //! first-class [`Fidelity`]. Formats are plugins: implement [`Codec`], register.
 
 use crate::sql::{Dialect, SqlCodec};
-use crate::{Caps, Codec, CoreError, SchemaIR};
+use crate::{Caps, Codec, CoreError, SchemaIR, SourceCounts};
 use serde::{Deserialize, Serialize};
 
 /// Convenience wrapper so callers can pass `"dbml"`, `Format::Dbml`, or their
@@ -120,25 +120,69 @@ impl Registry {
         to: &FormatId,
     ) -> Result<Conversion, CoreError> {
         let ir = self.parse_with(src, from)?;
+        self.measure(src, from, to, ir)
+    }
+
+    /// Emit `ir` into `to` and measure fidelity against the SOURCE TEXT: expected
+    /// totals come from the source codec's [`Codec::scan`] (parser-independent),
+    /// kept counts from re-parsing the emitted output. Anything the scan finds
+    /// that `ir` lacks is parse-time loss: reported in `dropped` and it clears
+    /// `idempotent`. `ir` is a parameter so tests can hand in a doctored IR.
+    pub fn measure(
+        &self,
+        src: &str,
+        from: &FormatId,
+        to: &FormatId,
+        ir: SchemaIR,
+    ) -> Result<Conversion, CoreError> {
         let to_codec = self.codec(to)?;
         let output = to_codec.emit(&ir)?;
-
-        // Fidelity: what survived into the target format? Measured by re-parsing
-        // the emitted output and comparing counts against the source IR.
         let reparsed = to_codec.parse(&output)?;
+
+        let ir_counts = SourceCounts {
+            tables: ir.tables.len(),
+            columns: ir.tables.iter().map(|t| t.columns.len()).sum(),
+            refs: ir.refs.len(),
+            indexes: ir.tables.iter().map(|t| t.indexes.len()).sum(),
+        };
+        let kept = SourceCounts {
+            tables: reparsed.tables.len(),
+            columns: reparsed.tables.iter().map(|t| t.columns.len()).sum(),
+            refs: reparsed.refs.len(),
+            indexes: reparsed.tables.iter().map(|t| t.indexes.len()).sum(),
+        };
+        // A scan can under-count (never over-count): trust whichever is larger.
+        let scanned = self.codec(from)?.scan(src).unwrap_or_default();
+        let expect = SourceCounts {
+            tables: scanned.tables.max(ir_counts.tables),
+            columns: scanned.columns.max(ir_counts.columns),
+            refs: scanned.refs.max(ir_counts.refs),
+            indexes: scanned.indexes.max(ir_counts.indexes),
+        };
+
+        let mut dropped = report_caps_gaps(&ir, from, to_codec);
+        let mut parse_loss = false;
+        for (label, want, have) in [
+            ("table", expect.tables, ir_counts.tables),
+            ("column", expect.columns, ir_counts.columns),
+            ("ref", expect.refs, ir_counts.refs),
+            ("index", expect.indexes, ir_counts.indexes),
+        ] {
+            if want > have {
+                parse_loss = true;
+                dropped.push(format!(
+                    "{} {label}(s) declared in source but missing after parse — parser loss",
+                    want - have
+                ));
+            }
+        }
         let fidelity = Fidelity {
-            tables: Outcome::of(reparsed.tables.len(), ir.tables.len()),
-            columns: Outcome::of(
-                reparsed.tables.iter().map(|t| t.columns.len()).sum(),
-                ir.tables.iter().map(|t| t.columns.len()).sum(),
-            ),
-            refs: Outcome::of(reparsed.refs.len(), ir.refs.len()),
-            indexes: Outcome::of(
-                reparsed.tables.iter().map(|t| t.indexes.len()).sum(),
-                ir.tables.iter().map(|t| t.indexes.len()).sum(),
-            ),
-            dropped: report_caps_gaps(&ir, from, to_codec),
-            idempotent: self.check_idempotent(from, &ir),
+            tables: Outcome::of(kept.tables, expect.tables),
+            columns: Outcome::of(kept.columns, expect.columns),
+            refs: Outcome::of(kept.refs, expect.refs),
+            indexes: Outcome::of(kept.indexes, expect.indexes),
+            dropped,
+            idempotent: !parse_loss && self.check_idempotent(from, &ir),
         };
         Ok(Conversion { output, fidelity })
     }
