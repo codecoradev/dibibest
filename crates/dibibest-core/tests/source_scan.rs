@@ -59,6 +59,53 @@ fn erdjson_counts() {
     assert_eq!(scan("erdjson", src), c(2, 3, 1, 1));
 }
 
+/// Issue #25 snippet: the scan reads 2 columns from TEXT, whatever the parser does.
+#[test]
+fn issue_25_snippet_totals_come_from_text() {
+    let src = "Table users { id integer [pk]\nname varchar\n}";
+    assert_eq!(scan("dbml", src), c(1, 2, 0, 0));
+    let f = Registry::with_defaults()
+        .convert_explicit(src, &id("dbml"), &id("sql"))
+        .unwrap()
+        .fidelity;
+    assert_eq!(
+        f.columns.total, 2,
+        "total must be the source-declared count"
+    );
+}
+
+/// Property: a parse that lost entities must NOT report lossless. Fails if
+/// fidelity ever goes back to measuring only the post-parse IR.
+#[test]
+fn doctored_ir_is_reported_as_parser_loss() {
+    let reg = Registry::with_defaults();
+    let src = "Table a {\n  id int [pk]\n  b int\n}\nTable c {\n  id int\n}\n";
+    let mut ir = reg.parse(src, &id("dbml")).unwrap();
+    assert!(
+        reg.measure(src, &id("dbml"), &id("sql"), ir.clone())
+            .unwrap()
+            .fidelity
+            .idempotent
+    );
+    ir.tables[0].columns.pop(); // simulate a parser that silently drops `b`
+    ir.tables.pop(); // …and table `c` with its column
+    let f = reg
+        .measure(src, &id("dbml"), &id("sql"), ir)
+        .unwrap()
+        .fidelity;
+    assert!(!f.idempotent, "parse loss must clear the lossless verdict");
+    assert!(!f.columns.lossless() && !f.tables.lossless());
+    assert_eq!((f.tables.kept, f.tables.total), (1, 2));
+    assert_eq!((f.columns.kept, f.columns.total), (1, 3));
+    assert!(
+        f.dropped
+            .iter()
+            .any(|d| d.contains("2 column(s) declared in source but missing after parse")),
+        "{:?}",
+        f.dropped
+    );
+}
+
 /// The scan may under-count but must never over-count a correct parse.
 #[test]
 fn scan_never_exceeds_ir_on_corpus() {
