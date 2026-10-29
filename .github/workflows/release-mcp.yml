@@ -48,7 +48,7 @@ jobs:
           echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | "$bin" | grep -q '"serverInfo"'
           file "$bin" | grep -Eq 'statically linked|static-pie linked'
       - run: mkdir -p dist/${{ matrix.arch }} && cp target/${{ matrix.target }}/release/dibibest-mcp dist/${{ matrix.arch }}/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dibibest-mcp-${{ matrix.arch }}
           path: dist/${{ matrix.arch }}/dibibest-mcp
@@ -83,7 +83,7 @@ jobs:
         run: |
           jq --arg v "$VERSION" '.version=$v | .packages[0].identifier |= sub("\\{\\{version\\}\\}"; $v)' server.json > dist/server.json
           ! grep -q '{{' dist/server.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: server.json
           path: dist/server.json
