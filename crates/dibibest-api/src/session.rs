@@ -1,7 +1,7 @@
 //! base64url, HMAC-signed cookie payloads, PKCE and random tokens.
 
-use hmac::{Hmac, Mac};
-use rand::RngCore;
+use hmac::{Hmac, KeyInit, Mac};
+use rand::Rng;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -82,7 +82,7 @@ pub fn verify(key: &[u8; 32], token: &str) -> Option<Value> {
 /// `n` random bytes, base64url.
 pub fn random_token(n: usize) -> String {
     let mut b = vec![0u8; n];
-    rand::rngs::OsRng.fill_bytes(&mut b);
+    rand::rng().fill_bytes(&mut b);
     b64url(&b)
 }
 
