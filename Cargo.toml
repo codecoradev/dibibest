@@ -4,7 +4,6 @@ members = [
     "crates/dibibest-core",
     "crates/dibibest-cli",
     "crates/dibibest-mcp",
-    "crates/dibibest-api",
     "crates/dibibest-wasm",
 ]
 

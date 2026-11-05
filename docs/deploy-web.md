@@ -43,10 +43,12 @@ demand). It:
 1. **Cloudflare credentials:** give this repository access to the org secrets
    `CLOUDFLARE_API_TOKEN` (Pages: Edit; plus DNS edit on `codecora.dev` for
    the custom domain) and `CLOUDFLARE_ACCOUNT_ID`.
-2. **Custom domain:** `codecora.dev` must be a zone in the same Cloudflare
-   account; the workflow then attaches `dibibest.codecora.dev` and Cloudflare
-   creates the CNAME. Otherwise add it once under Workers & Pages → dibibest →
-   Custom domains.
+2. **Custom domain:** the workflow registers `dibibest.codecora.dev` on the
+   Pages project, but registering through the API does **not** create the DNS
+   record (the dashboard does). Add it once in the `codecora.dev` zone:
+   `CNAME dibibest → dibibest.pages.dev`, proxied. Without it the
+   `*.codecora.dev` wildcard catches the name and answers 522; the domain then
+   turns Active under Workers & Pages → dibibest → Custom domains.
 3. **Gatehouse client** (CodeCora ID admin → OAuth clients): a confidential
    client with PKCE and the redirect URIs
    - `https://dibibest.codecora.dev/auth/callback`
