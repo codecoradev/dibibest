@@ -24,7 +24,7 @@ fidelity over cleverness. **Emit** is dialect-specific.
 |---|---|---|---|
 | Tables / columns / PK / NOT NULL / UNIQUE / DEFAULT | ✅ | ✅ | ✅ |
 | Foreign keys (inline + table-level) | ✅ | ✅ | ✅ |
-| Identifier quoting | bare | `` `backticks` `` | bare |
+| Identifier quoting | bare when plain; `"…"` for spaces, dots, reserved words (`user`, `order`), inner `"` doubled | `` `backticks` `` always | same as PostgreSQL |
 | Auto-increment (`Column.autoincrement`) | ❌ not emitted (known gap) | ✅ `AUTO_INCREMENT` | ✅ `PRIMARY KEY AUTOINCREMENT` |
 | Enums (`CREATE TYPE … AS ENUM`) | ✅ parse + emit | ❌ dropped, reported | ❌ dropped, reported |
 | Plain indexes | ✅ | ✅ | ✅ |
