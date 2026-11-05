@@ -68,7 +68,8 @@
         "name": { "type": ["string", "null"] },
         "columns": { "type": "array", "items": { "type": "string" } },
         "unique": { "type": "boolean" },
-        "expr": { "type": "string" }
+        "expr": { "type": "string", "description": "SQL key list when the key is not plain columns, e.g. (lower(email)), id DESC" },
+        "predicate": { "type": "string", "description": "Partial-index WHERE predicate, without the keyword" }
       }
     },
     "edge": {

@@ -510,13 +510,11 @@ fn parse_index_line(l: &str) -> Option<(IndexDef, Vec<String>)> {
         columns: Vec::new(),
         unique: false,
         expr: None,
+        predicate: None,
     };
-    if inner.contains('`') || inner.contains('(') {
-        idx.expr = Some(inner.to_string());
-    } else {
-        // index columns are identifiers like any column: store them unquoted
-        idx.columns = inner.split(',').map(unquote_ident).collect();
-    }
+    let (parts, predicate) = index_key_from_dbml(inner);
+    set_index_key(&mut idx, parts);
+    idx.predicate = predicate;
     let mut unknown = Vec::new();
     if let Some(settings) = bracket_inner(rest) {
         for s in split_settings(settings) {
@@ -619,6 +617,87 @@ fn split_settings(s: &str) -> Vec<String> {
     out
 }
 
+/// DBML index key `a, "b c", `lower(d)`, `e DESC WHERE f`` → key parts plus
+/// partial predicate. Backticks mark SQL text: an expression, a column with
+/// an ordering, or (DBML has no other syntax for it) a trailing `WHERE …`.
+fn index_key_from_dbml(inner: &str) -> (Vec<KeyPart>, Option<String>) {
+    let mut parts = Vec::new();
+    let mut predicate = None;
+    for el in split_top_level(inner, ',') {
+        if let Some(sql) = el.strip_prefix('`').and_then(|x| x.strip_suffix('`')) {
+            let (key, pred) = split_where(sql);
+            if pred.is_some() {
+                predicate = pred;
+            }
+            parts.extend(split_top_level(&key, ',').iter().map(|p| parse_key_part(p)));
+        } else if !el.is_empty() {
+            parts.push(KeyPart::Column(unquote_ident(&el), None));
+        }
+    }
+    // a backticked bare identifier without ordering is just a column
+    let parts = parts
+        .into_iter()
+        .map(|p| match p {
+            KeyPart::Expr(e, o) if is_bare_word(&e) => KeyPart::Column(e, o),
+            p => p,
+        })
+        .collect();
+    (parts, predicate)
+}
+
+fn is_bare_word(s: &str) -> bool {
+    s.chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Inverse of [`index_key_from_dbml`]: plain columns bare (quoted when needed),
+/// ordered columns and expressions in backticks, the predicate appended to the
+/// last backtick element.
+fn index_key_to_dbml(idx: &IndexDef) -> String {
+    // SQL spelling of a column inside backticks: plain, or "double quoted"
+    let sql_col = |c: &str| {
+        if is_bare_word(c) {
+            c.to_string()
+        } else {
+            format!("\"{}\"", c.replace('"', "\"\""))
+        }
+    };
+    let parts = index_key_parts(idx);
+    let last = parts.len().saturating_sub(1);
+    let mut els: Vec<String> = parts
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            // the predicate rides in the last element, which must then be SQL text
+            let pred = idx
+                .predicate
+                .as_ref()
+                .filter(|_| i == last)
+                .map_or(String::new(), |w| format!(" WHERE {w}"));
+            match p {
+                KeyPart::Column(c, None) if pred.is_empty() => quote_ident(c),
+                KeyPart::Column(c, o) => format!(
+                    "`{}{}{pred}`",
+                    sql_col(c),
+                    o.as_ref().map_or(String::new(), |o| format!(" {o}"))
+                ),
+                KeyPart::Expr(e, o) => format!(
+                    "`{e}{}{pred}`",
+                    o.as_ref().map_or(String::new(), |o| format!(" {o}"))
+                ),
+            }
+        })
+        .collect();
+    if parts.is_empty() {
+        if let Some(w) = &idx.predicate {
+            els.push(format!("`WHERE {w}`"));
+        }
+    }
+    els.join(", ")
+}
+
 // ── Emit ────────────────────────────────────────────────────────────────────
 
 fn emit_dbml(ir: &SchemaIR) -> Result<String, CoreError> {
@@ -671,12 +750,7 @@ fn emit_dbml(ir: &SchemaIR) -> Result<String, CoreError> {
         if !t.indexes.is_empty() {
             let _ = writeln!(out, "\n  indexes {{");
             for idx in &t.indexes {
-                let cols = if idx.columns.is_empty() {
-                    format!("({})", idx.expr.as_deref().unwrap_or(""))
-                } else {
-                    let cols: Vec<String> = idx.columns.iter().map(|c| quote_ident(c)).collect();
-                    format!("({})", cols.join(", "))
-                };
+                let cols = format!("({})", index_key_to_dbml(idx));
                 let mut settings: Vec<String> = Vec::new();
                 if idx.unique {
                     settings.push("unique".into());

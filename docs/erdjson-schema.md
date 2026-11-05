@@ -42,6 +42,10 @@ never parses DBML/SQL/Prisma, it consumes this. Machine-readable schema:
   `isNullable` is `!not_null` as stored in the IR.
 - **Extras beyond the minimal contract** (all optional, omitted when empty):
   column `autoincrement`/`default`/`note`, node `indexes[]`, top-level `enums[]`.
+  An index holds its key either as `columns` (plain columns) or as `expr` (SQL
+  key list with parenthesised expressions, e.g. `"(lower(email))"`,
+  `"account_id, id DESC"`), plus an optional partial-index `predicate`
+  (`"resolved = false"`).
   They keep the IR lossless through ERD-JSON; a canvas may ignore them.
 - **`default`** is SQL expression text, the same in every format: string
   literals keep their single quotes (`"'user'"`, inner quotes doubled), numbers,

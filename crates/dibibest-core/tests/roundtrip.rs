@@ -422,3 +422,83 @@ fn reserved_word_identifiers_are_quoted() {
     assert!(conv.output.contains("  user_id int,"), "{}", conv.output);
     assert_eq!((conv.fidelity.refs.kept, conv.fidelity.refs.total), (1, 1));
 }
+
+/// Expression, ordered and partial indexes produce valid SQL and come back to
+/// the same DBML. Regression for #49 (DBML backticks leaked into SQL).
+const EXPR_INDEX_DBML: &str = r#"
+Table alerts {
+  id int [pk]
+  email varchar
+  amount int
+  fired_at timestamptz
+  resolved boolean
+
+  indexes {
+    (`lower(email)`) [name: 'by_email']
+    (`fired_at DESC`) [name: 'recent']
+    (id, `amount DESC`) [name: 'mixed']
+    (`coalesce(amount, 0)`, fired_at) [name: 'coalesced']
+    (`fired_at WHERE resolved = false`) [unique, name: 'open_alerts']
+  }
+}
+"#;
+
+#[test]
+fn expression_and_partial_indexes_emit_valid_sql() {
+    let reg = Registry::with_defaults();
+    let conv = reg
+        .convert_explicit(
+            EXPR_INDEX_DBML,
+            &FormatId::new("dbml"),
+            &FormatId::new("sql"),
+        )
+        .unwrap();
+    let sql = &conv.output;
+    for want in [
+        "CREATE INDEX by_email ON alerts ((lower(email)));",
+        "CREATE INDEX recent ON alerts (fired_at DESC);",
+        "CREATE INDEX mixed ON alerts (id, amount DESC);",
+        "CREATE INDEX coalesced ON alerts ((coalesce(amount, 0)), fired_at);",
+        "CREATE UNIQUE INDEX open_alerts ON alerts (fired_at) WHERE resolved = false;",
+    ] {
+        assert!(sql.contains(want), "missing `{want}` in:\n{sql}");
+    }
+    assert!(!sql.contains('`'), "DBML backticks leaked:\n{sql}");
+    assert_eq!(
+        (conv.fidelity.indexes.kept, conv.fidelity.indexes.total),
+        (5, 5)
+    );
+    // and back: SQL → DBML restores the same index lines
+    let back = reg
+        .convert_explicit(sql, &FormatId::new("sql"), &FormatId::new("dbml"))
+        .unwrap()
+        .output;
+    for want in [
+        "(`lower(email)`) [name: 'by_email']",
+        "(`fired_at DESC`) [name: 'recent']",
+        "(id, `amount DESC`) [name: 'mixed']",
+        "(`coalesce(amount, 0)`, fired_at) [name: 'coalesced']",
+        "(`fired_at WHERE resolved = false`) [unique, name: 'open_alerts']",
+    ] {
+        assert!(back.contains(want), "missing `{want}` in:\n{back}");
+    }
+}
+
+#[test]
+fn keyless_index_is_reported_dropped_for_sql() {
+    let src = "Table t {\n  id int [pk]\n  s varchar\n\n  indexes {\n    \
+               (`WHERE s = 'open'`) [unique, name: 'only_open']\n  }\n}\n";
+    let conv = Registry::with_defaults()
+        .convert_explicit(src, &FormatId::new("dbml"), &FormatId::new("sql"))
+        .unwrap();
+    assert!(!conv.output.contains("only_open"), "{}", conv.output);
+    assert_eq!(
+        (conv.fidelity.indexes.kept, conv.fidelity.indexes.total),
+        (0, 1)
+    );
+    let note = conv.fidelity.dropped.join(" | ");
+    assert!(
+        note.contains("without key columns") && note.contains("t.only_open"),
+        "{note}"
+    );
+}

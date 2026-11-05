@@ -2,6 +2,7 @@
 //! `convert` (auto-detect), `convert_explicit`, and the `Conversion` result with
 //! first-class [`Fidelity`]. Formats are plugins: implement [`Codec`], register.
 
+use crate::ir::{index_key_parts, KeyPart};
 use crate::sql::{Dialect, SqlCodec};
 use crate::{Caps, Codec, CoreError, RefKind, SchemaIR, SourceCounts};
 use serde::{Deserialize, Serialize};
@@ -151,7 +152,9 @@ impl Registry {
             // Refs are matched by normalized endpoints, not counted: a ref that
             // comes back reversed or on the wrong columns is not "kept".
             refs: matched_refs(&ir, &reparsed),
-            indexes: reparsed.tables.iter().map(|t| t.indexes.len()).sum(),
+            // Indexes likewise: an expression that comes back as a column, a
+            // lost predicate or a lost DESC is not "kept".
+            indexes: matched_indexes(&ir, &reparsed),
         };
         // A scan can under-count (never over-count): trust whichever is larger.
         let scanned = self.codec(from)?.scan(src).unwrap_or_default();
@@ -262,6 +265,49 @@ fn ref_keys(ir: &SchemaIR) -> Vec<RefKey> {
         .collect()
 }
 
+/// An index as (table, unique, key shape, has predicate). The key shape keeps
+/// column names and, for expressions, only the fact that it is an expression
+/// plus whether it is ordered: expression text is normalized differently by
+/// each parser (`::text` vs `::TEXT`), so comparing it would report false loss.
+type IndexKey = (String, bool, Vec<(bool, String, bool)>, bool);
+
+fn index_keys(ir: &SchemaIR) -> Vec<IndexKey> {
+    ir.tables
+        .iter()
+        .flat_map(|t| {
+            t.indexes.iter().map(move |i| {
+                let shape = index_key_parts(i)
+                    .into_iter()
+                    .map(|p| match p {
+                        KeyPart::Column(c, o) => (false, c.to_lowercase(), o.is_some()),
+                        KeyPart::Expr(_, o) => (true, String::new(), o.is_some()),
+                    })
+                    .collect();
+                (
+                    t.name.to_lowercase(),
+                    i.unique,
+                    shape,
+                    i.predicate.is_some(),
+                )
+            })
+        })
+        .collect()
+}
+
+/// How many of `ir`'s indexes reappear in `reparsed` (multiset match).
+fn matched_indexes(ir: &SchemaIR, reparsed: &SchemaIR) -> usize {
+    let mut pool = index_keys(reparsed);
+    index_keys(ir)
+        .into_iter()
+        .filter(|k| {
+            pool.iter()
+                .position(|p| p == k)
+                .map(|i| pool.swap_remove(i))
+                .is_some()
+        })
+        .count()
+}
+
 /// How many of `ir`'s refs reappear in `reparsed` (multiset match).
 fn matched_refs(ir: &SchemaIR, reparsed: &SchemaIR) -> usize {
     let mut pool = ref_keys(reparsed);
@@ -288,20 +334,40 @@ fn report_caps_gaps(ir: &SchemaIR, _from: &FormatId, to: &dyn Codec) -> Vec<Stri
     if has_indexes && !caps.indexes {
         gaps.push("indexes have no equivalent in target format".into());
     }
-    let expr: Vec<String> =
-        ir.tables
-            .iter()
-            .flat_map(|t| {
-                t.indexes.iter().filter(|i| i.expr.is_some()).map(move |i| {
-                    format!("{}.{}", t.name, i.name.as_deref().unwrap_or("<unnamed>"))
-                })
-            })
-            .collect();
+    let expr: Vec<String> = ir
+        .tables
+        .iter()
+        .flat_map(|t| {
+            t.indexes
+                .iter()
+                .filter(|i| i.expr.is_some() || i.predicate.is_some())
+                .map(move |i| format!("{}.{}", t.name, i.name.as_deref().unwrap_or("<unnamed>")))
+        })
+        .collect();
     if !expr.is_empty() && !caps.expr_indexes {
         gaps.push(format!(
             "{} expression/partial index(es) dropped — no equivalent in target format: {}",
             expr.len(),
             expr.join(", ")
+        ));
+    }
+    // A predicate-only index (DBML `` (`WHERE …`) ``) has no key, which SQL
+    // `CREATE INDEX` requires.
+    let keyless: Vec<String> = ir
+        .tables
+        .iter()
+        .flat_map(|t| {
+            t.indexes
+                .iter()
+                .filter(|i| i.columns.is_empty() && i.expr.is_none())
+                .map(move |i| format!("{}.{}", t.name, i.name.as_deref().unwrap_or("<unnamed>")))
+        })
+        .collect();
+    if !keyless.is_empty() && to.id().starts_with("sql") {
+        gaps.push(format!(
+            "{} index(es) without key columns dropped — SQL needs at least one: {}",
+            keyless.len(),
+            keyless.join(", ")
         ));
     }
     if has_enums && !caps.enums {
@@ -470,6 +536,42 @@ mod tests {
         )]);
         assert_eq!(matched_refs(&ir, &plain), 0);
         assert_eq!(matched_refs(&ir, &schema(vec![cascade])), 1);
+    }
+
+    fn with_index(idx: crate::ir::IndexDef) -> SchemaIR {
+        let mut s = schema(vec![]);
+        s.tables[0].indexes.push(idx);
+        s
+    }
+
+    fn index(expr: Option<&str>, cols: &[&str], pred: Option<&str>) -> crate::ir::IndexDef {
+        crate::ir::IndexDef {
+            name: Some("i".into()),
+            columns: cols.iter().map(|c| c.to_string()).collect(),
+            unique: false,
+            expr: expr.map(String::from),
+            predicate: pred.map(String::from),
+        }
+    }
+
+    #[test]
+    fn expression_index_that_comes_back_as_a_column_is_not_kept() {
+        // Regression for #49: `lower(email)` re-parsed as a quoted column name.
+        let ir = with_index(index(Some("(lower(email))"), &[], None));
+        let corrupted = with_index(index(None, &["lower(email)"], None));
+        assert_eq!(matched_indexes(&ir, &corrupted), 0);
+        // the same expression spelled differently by another parser is kept
+        let respelled = with_index(index(Some("(LOWER(email))"), &[], None));
+        assert_eq!(matched_indexes(&ir, &respelled), 1);
+    }
+
+    #[test]
+    fn index_that_loses_its_predicate_or_order_is_not_kept() {
+        let partial = with_index(index(None, &["s"], Some("s IS NOT NULL")));
+        let plain = with_index(index(None, &["s"], None));
+        assert_eq!(matched_indexes(&partial, &plain), 0);
+        let desc = with_index(index(Some("s DESC"), &[], None));
+        assert_eq!(matched_indexes(&desc, &plain), 0);
     }
 
     #[test]

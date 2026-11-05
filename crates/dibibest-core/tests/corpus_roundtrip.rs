@@ -89,9 +89,10 @@ fn unknown_settings_are_preserved_and_round_trip() {
 }
 
 /// Every corpus file converts to every target format, the output re-parses,
-/// and no table, column or ref is lost. Indexes are excluded: expression /
-/// partial indexes are a documented capability gap for some targets, reported
-/// in `dropped`. Regression for #45 (3 files failed DBML → SQL outright).
+/// and no table, column or ref is lost. Indexes must survive too where the
+/// target can express them (PostgreSQL, SQLite, ERD-JSON, DBML); MySQL and
+/// Prisma report expression/partial indexes in `dropped`.
+/// Regressions for #45 (3 files failed DBML → SQL) and #49 (index backticks).
 #[test]
 fn corpus_converts_to_every_format() {
     let reg = Registry::with_defaults();
@@ -127,6 +128,16 @@ fn corpus_converts_to_every_format() {
                         if o.kept != o.total {
                             failures.push(format!("{name} -> {to}: {what} {}/{}", o.kept, o.total));
                         }
+                    }
+                    // every index survives where the target can express it
+                    let idx = &fid.indexes;
+                    if ["sql", "sql:sqlite", "erdjson", "dbml"].contains(&to)
+                        && idx.kept != idx.total
+                    {
+                        failures.push(format!(
+                            "{name} -> {to}: indexes {}/{}",
+                            idx.kept, idx.total
+                        ));
                     }
                     if let Err(e) = reg.parse(&c.output, &id) {
                         failures.push(format!("{name} -> {to}: output does not re-parse: {e}"));

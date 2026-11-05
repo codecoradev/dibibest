@@ -64,13 +64,233 @@ pub struct Column {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexDef {
     pub name: Option<String>,
+    /// Key when it is plain columns only (no expressions, no ASC/DESC).
     pub columns: Vec<String>,
     #[serde(default)]
     pub unique: bool,
-    /// DBML expression indexes (e.g. partial indexes) — kept verbatim when a
-    /// target format cannot represent them, so round-trips stay lossless.
+    /// Key when it is not plain columns: the SQL key list, e.g.
+    /// `(lower(email))`, `account_id, id DESC`, `(coalesce(v, 0)), ts`.
+    /// Expressions are parenthesised; no DBML backticks. Exactly one of
+    /// `columns` / `expr` holds the key (both empty only for a key-less index).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expr: Option<String>,
+    /// Partial-index predicate (`WHERE …` without the keyword).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicate: Option<String>,
+}
+
+/// One element of an index key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyPart {
+    /// A column, optionally with an ordering suffix (`DESC`, `ASC NULLS LAST`).
+    Column(String, Option<String>),
+    /// An expression (without its surrounding parentheses), optionally ordered.
+    Expr(String, Option<String>),
+}
+
+/// Split `s` on `sep` at top level: outside '…', "…", `…` and parentheses.
+pub fn split_top_level(s: &str, sep: char) -> Vec<String> {
+    let (mut out, mut cur, mut depth) = (Vec::new(), String::new(), 0i32);
+    let mut quote: Option<char> = None;
+    for c in s.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None => match c {
+                '\'' | '"' | '`' => quote = Some(c),
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ if c == sep && depth == 0 => {
+                    out.push(cur.trim().to_string());
+                    cur.clear();
+                    continue;
+                }
+                _ => {}
+            },
+        }
+        cur.push(c);
+    }
+    if !cur.trim().is_empty() || !out.is_empty() {
+        out.push(cur.trim().to_string());
+    }
+    out
+}
+
+/// Byte offset of a top-level, case-insensitive ` WHERE ` keyword in `s`.
+fn find_top_level_where(s: &str) -> Option<usize> {
+    let (mut depth, mut quote) = (0i32, None::<char>);
+    let lower = s.to_ascii_lowercase();
+    for (i, c) in s.char_indices() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None => match c {
+                '\'' | '"' | '`' => quote = Some(c),
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ if depth == 0 && lower[i..].starts_with("where") => {
+                    let before = i == 0 || s[..i].ends_with(char::is_whitespace);
+                    let after = lower[i + 5..].starts_with(char::is_whitespace);
+                    if before && after {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+    None
+}
+
+/// `key WHERE pred` → (`key`, Some(`pred`)); no top-level WHERE → (`s`, None).
+pub fn split_where(s: &str) -> (String, Option<String>) {
+    match find_top_level_where(s) {
+        Some(i) => (
+            s[..i].trim().to_string(),
+            Some(s[i + 5..].trim().to_string()),
+        ),
+        None => (s.trim().to_string(), None),
+    }
+}
+
+/// Peel a trailing `ASC`/`DESC` and/or `NULLS FIRST|LAST` off one key element.
+/// The body keeps its text as written; the order words are upper-cased.
+fn split_order(e: &str) -> (String, Option<String>) {
+    fn last_word(s: &str) -> Option<(&str, String)> {
+        let (rest, w) = s.rsplit_once(char::is_whitespace)?;
+        Some((rest.trim_end(), w.to_ascii_uppercase()))
+    }
+    let mut body = e.trim();
+    let mut suffix: Vec<String> = Vec::new();
+    if let Some((rest, w)) = last_word(body).filter(|(_, w)| w == "FIRST" || w == "LAST") {
+        if let Some((rest2, _)) = last_word(rest).filter(|(_, n)| n == "NULLS") {
+            suffix = vec!["NULLS".into(), w];
+            body = rest2;
+        }
+    }
+    if let Some((rest, w)) = last_word(body).filter(|(_, w)| w == "ASC" || w == "DESC") {
+        suffix.insert(0, w);
+        body = rest;
+    }
+    if suffix.is_empty() || body.is_empty() {
+        (e.trim().to_string(), None)
+    } else {
+        (body.to_string(), Some(suffix.join(" ")))
+    }
+}
+
+fn is_plain_ident(s: &str) -> bool {
+    s.chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Strip one pair of parentheses that wraps the whole of `s` — only when the
+/// opening paren closes at the very end (`(a) + (b)` is not wrapped).
+fn strip_wrapping_parens(s: &str) -> Option<&str> {
+    let inner = s.strip_prefix('(')?.strip_suffix(')')?;
+    let (mut depth, mut quote) = (0i32, None::<char>);
+    for c in inner.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None => match c {
+                '\'' | '"' => quote = Some(c),
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth < 0 {
+                        return None;
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+    (depth == 0).then_some(inner)
+}
+
+/// One SQL key element (`(expr) DESC`, `"my col"`, `lower(x)`) → [`KeyPart`].
+pub fn parse_key_part(e: &str) -> KeyPart {
+    let (body, order) = split_order(e);
+    if let Some(inner) = strip_wrapping_parens(&body) {
+        return KeyPart::Expr(inner.trim().to_string(), order);
+    }
+    if is_plain_ident(&body) {
+        return KeyPart::Column(body, order);
+    }
+    // `col opclass` (e.g. `email text_pattern_ops`): a column with an operator
+    // class, not an expression — keep the class in the suffix, before the order
+    if let Some((col, class)) = body.split_once(char::is_whitespace) {
+        let class = class.trim();
+        if is_plain_ident(col) && class.split('.').all(is_plain_ident) {
+            let suffix = match order {
+                Some(o) => format!("{class} {o}"),
+                None => class.to_string(),
+            };
+            return KeyPart::Column(col.to_string(), Some(suffix));
+        }
+    }
+    for qc in ['"', '`'] {
+        if let Some(q) = body.strip_prefix(qc).and_then(|x| x.strip_suffix(qc)) {
+            let pair: String = [qc, qc].iter().collect();
+            if !q.replace(&pair, "").contains(qc) {
+                return KeyPart::Column(q.replace(&pair, &qc.to_string()), order);
+            }
+        }
+    }
+    KeyPart::Expr(body, order)
+}
+
+/// The key of an index as parts, from `columns` or the `expr` key list.
+pub fn index_key_parts(idx: &IndexDef) -> Vec<KeyPart> {
+    match &idx.expr {
+        Some(e) => split_top_level(e, ',')
+            .iter()
+            .map(|p| parse_key_part(p))
+            .collect(),
+        None => idx
+            .columns
+            .iter()
+            .map(|c| KeyPart::Column(c.clone(), None))
+            .collect(),
+    }
+}
+
+/// Store `parts` on `idx`: plain columns go to `columns`, anything else to the
+/// canonical SQL key list in `expr` (expressions parenthesised).
+pub fn set_index_key(idx: &mut IndexDef, parts: Vec<KeyPart>) {
+    if parts.iter().all(|p| matches!(p, KeyPart::Column(_, None))) {
+        idx.columns = parts
+            .into_iter()
+            .map(|p| match p {
+                KeyPart::Column(c, _) => c,
+                KeyPart::Expr(..) => unreachable!(),
+            })
+            .collect();
+        idx.expr = None;
+        return;
+    }
+    let render = |p: &KeyPart| {
+        let (body, order) = match p {
+            KeyPart::Column(c, o) => (
+                if is_plain_ident(c) {
+                    c.clone()
+                } else {
+                    format!("\"{}\"", c.replace('"', "\"\""))
+                },
+                o,
+            ),
+            KeyPart::Expr(e, o) => (format!("({e})"), o),
+        };
+        match order {
+            Some(o) => format!("{body} {o}"),
+            None => body,
+        }
+    };
+    idx.columns = Vec::new();
+    idx.expr = Some(parts.iter().map(render).collect::<Vec<_>>().join(", "));
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
