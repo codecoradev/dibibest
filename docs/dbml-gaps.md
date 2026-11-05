@@ -18,7 +18,7 @@ Corpus: `crates/dibibest-core/tests/corpus/*.dbml`, gate ≥95% in
 | Unknown column settings | `salary numeric [color: red]` | Emitted on the line above the column. |
 | Table header settings | `Table t [headercolor: #3498DB] {` | Emitted at the end of the table body. |
 | Unknown index settings | `(a) [type: hash]` | Attached to the **table**, not the index; includes `pk` on composite-PK indexes. |
-| Ref settings | `Ref: a.b > c.d [delete: cascade]` | Collected in schema-level `unknown`, emitted after the refs (association with the specific Ref is lost). |
+| Ref settings other than `delete` / `update` | `Ref: a.b > c.d [color: #f00]` | Collected in schema-level `unknown`, emitted after the refs (association with the specific Ref is lost). `delete:` / `update:` are modeled as referential actions and map to SQL `ON DELETE` / `ON UPDATE`, Prisma `onDelete` / `onUpdate` and ERD-JSON `onDelete` / `onUpdate`. |
 | Explicit `null` | `col int [null]` | Treated as an unknown setting. |
 | Project body | `database_type: 'PostgreSQL'`, `Note { … }` | Kept verbatim line-by-line (comments inside are dropped). |
 | Enum value settings | `created [note: 'x']` | The whole line is kept as the value text. |
@@ -52,7 +52,7 @@ Corpus: `crates/dibibest-core/tests/corpus/*.dbml`, gate ≥95% in
 
 ## Fidelity caveats to know
 
-- Index and Ref unknowns lose their exact owner (see above); they stay stable
+- Index and Ref unknowns (other than referential actions) lose their exact owner (see above); they stay stable
   across round-trips, which is what the corpus gate measures.
 - Columns with an unknown setting gain a `// unknown:` line on emit; that line,
   not the original `[…]` entry, is what a second parse reads.

@@ -130,6 +130,8 @@ impl Codec for SqlCodec {
                                     to_cols: fk.referred_columns.iter().map(ident_str).collect(),
                                     kind: RefKind::ManyToOne,
                                     name: None,
+                                    on_delete: action(&fk.on_delete),
+                                    on_update: action(&fk.on_update),
                                 }),
                                 _ => {}
                             }
@@ -157,6 +159,8 @@ impl Codec for SqlCodec {
                                 to_cols: fk.referred_columns.iter().map(ident_str).collect(),
                                 kind: RefKind::ManyToOne,
                                 name: None,
+                                on_delete: action(&fk.on_delete),
+                                on_update: action(&fk.on_update),
                             }),
                             _ => {}
                         }
@@ -270,12 +274,18 @@ impl Codec for SqlCodec {
                 if pk_cols.is_empty() || pk_cols.len() != fk_cols.len() {
                     continue;
                 }
-                lines.push(format!(
+                let mut fk = format!(
                     "  FOREIGN KEY ({}) REFERENCES {}({})",
                     self.qs(fk_cols),
                     self.q(pk_table),
                     self.qs(&pk_cols)
-                ));
+                );
+                for (when, act) in [("DELETE", &r.on_delete), ("UPDATE", &r.on_update)] {
+                    if let Some(a) = act {
+                        let _ = write!(fk, " ON {when} {}", a.to_ascii_uppercase());
+                    }
+                }
+                lines.push(fk);
             }
             let _ = writeln!(
                 out,
@@ -368,4 +378,9 @@ fn render_type(dt: &DataType) -> String {
         DataType::Double(_) => "DOUBLE PRECISION".into(),
         other => other.to_string().to_uppercase(),
     }
+}
+
+/// sqlparser's referential action, normalized to the IR vocabulary.
+fn action(a: &Option<sqlparser::ast::ReferentialAction>) -> Option<String> {
+    a.as_ref().and_then(|a| normalize_action(&a.to_string()))
 }

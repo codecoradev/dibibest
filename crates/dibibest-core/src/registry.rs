@@ -214,10 +214,18 @@ impl Registry {
     }
 }
 
-/// A ref as (FK table, FK cols) → (referenced table, referenced cols), lowercased.
-/// `OneToMany` is stored "one" side first, so it is swapped; omitted referenced
-/// columns resolve to the referenced table's primary key.
-type RefKey = (String, Vec<String>, String, Vec<String>);
+/// A ref as (FK table, FK cols) → (referenced table, referenced cols), lowercased,
+/// plus its referential actions. `OneToMany` is stored "one" side first, so it is
+/// swapped; omitted referenced columns resolve to the referenced table's primary
+/// key. A ref whose actions are lost or changed is therefore not "kept".
+type RefKey = (
+    String,
+    Vec<String>,
+    String,
+    Vec<String>,
+    Option<String>,
+    Option<String>,
+);
 
 fn ref_keys(ir: &SchemaIR) -> Vec<RefKey> {
     let lower = |v: &[String]| v.iter().map(|c| c.to_lowercase()).collect::<Vec<_>>();
@@ -242,7 +250,14 @@ fn ref_keys(ir: &SchemaIR) -> Vec<RefKey> {
             } else {
                 pc.clone()
             };
-            (ft.to_lowercase(), lower(fc), pt.to_lowercase(), lower(&pc))
+            (
+                ft.to_lowercase(),
+                lower(fc),
+                pt.to_lowercase(),
+                lower(&pc),
+                r.on_delete.clone(),
+                r.on_update.clone(),
+            )
         })
         .collect()
 }
@@ -395,6 +410,8 @@ mod tests {
             },
             kind,
             name: None,
+            on_delete: None,
+            on_update: None,
         }
     }
 
@@ -436,6 +453,23 @@ mod tests {
             RefKind::ManyToOne,
         )]);
         assert_eq!(matched_refs(&ir, &reversed), 0);
+    }
+
+    #[test]
+    fn ref_that_loses_its_action_is_not_kept() {
+        // Regression for #43: the action is part of the ref's identity.
+        let mut cascade = r("follows", "user_id", "users", "id", RefKind::ManyToOne);
+        cascade.on_delete = Some("cascade".into());
+        let ir = schema(vec![cascade.clone()]);
+        let plain = schema(vec![r(
+            "follows",
+            "user_id",
+            "users",
+            "id",
+            RefKind::ManyToOne,
+        )]);
+        assert_eq!(matched_refs(&ir, &plain), 0);
+        assert_eq!(matched_refs(&ir, &schema(vec![cascade])), 1);
     }
 
     #[test]

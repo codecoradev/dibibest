@@ -722,6 +722,8 @@ fn resolve(
                     RefKind::ManyToOne
                 },
                 name,
+                on_delete: named(rel, "onDelete").and_then(|a| normalize_action(&a)),
+                on_update: named(rel, "onUpdate").and_then(|a| normalize_action(&a)),
             });
         }
         ir.tables.push(t);
@@ -888,8 +890,12 @@ fn emit_prisma(ir: &SchemaIR) -> String {
         let n = rname
             .as_ref()
             .map_or(String::new(), |n| format!("{}, ", quote(n)));
+        let actions: String = [("onDelete", &r.on_delete), ("onUpdate", &r.on_update)]
+            .into_iter()
+            .filter_map(|(k, v)| v.as_deref().map(|v| format!(", {k}: {}", prisma_action(v))))
+            .collect();
         extra[*fi].push(format!(
-            "{rel} {pm}{} @relation({n}fields: [{}], references: [{}])",
+            "{rel} {pm}{} @relation({n}fields: [{}], references: [{}]{actions})",
             if optional { "?" } else { "" },
             fk.join(", "),
             refs.join(", ")
@@ -1004,4 +1010,15 @@ fn emit_prisma(ir: &SchemaIR) -> String {
         let _ = writeln!(out, "{UNKNOWN} {u}");
     }
     out
+}
+
+/// IR referential action → Prisma `ReferentialAction` enum value.
+fn prisma_action(a: &str) -> &'static str {
+    match a {
+        "cascade" => "Cascade",
+        "restrict" => "Restrict",
+        "set null" => "SetNull",
+        "set default" => "SetDefault",
+        _ => "NoAction",
+    }
 }

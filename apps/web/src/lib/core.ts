@@ -32,12 +32,16 @@ export type ErdNode = {
 	note?: string;
 	indexes?: unknown[];
 };
+export type RefAction = 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action';
+
 export type ErdEdge = {
 	id: string;
 	from: { table: string; columns: string[] };
 	to: { table: string; columns: string[] };
 	kind: 'many-to-one' | 'one-to-one' | 'one-to-many';
 	label?: string;
+	onDelete?: RefAction;
+	onUpdate?: RefAction;
 };
 /** ERD-JSON v1 (docs/erdjson-schema.md) — the single workspace state. */
 export type ErdDoc = {

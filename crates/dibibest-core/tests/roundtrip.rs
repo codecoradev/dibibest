@@ -249,3 +249,70 @@ fn one_to_many_ref_puts_fk_on_many_side_in_sql() {
     assert_eq!(conv.fidelity.refs.kept, 3);
     assert_eq!(conv.fidelity.refs.total, 3);
 }
+
+/// Referential actions survive every target format and back. Regression for #43.
+const CASCADE_DBML: &str = r#"
+Table users {
+  id int [pk]
+}
+
+Table orders {
+  id int [pk]
+  user_id int
+}
+
+Ref: orders.user_id > users.id [delete: cascade, update: set null]
+"#;
+
+#[test]
+fn referential_actions_survive_every_target() {
+    let reg = Registry::with_defaults();
+    for to in [
+        "dbml",
+        "sql",
+        "sql:mysql",
+        "sql:sqlite",
+        "prisma",
+        "erdjson",
+    ] {
+        let conv = reg
+            .convert_explicit(CASCADE_DBML, &FormatId::new("dbml"), &FormatId::new(to))
+            .unwrap();
+        let back = reg.parse(&conv.output, &FormatId::new(to)).unwrap();
+        let r = &back.refs[0];
+        assert_eq!(
+            r.on_delete.as_deref(),
+            Some("cascade"),
+            "{to}:\n{}",
+            conv.output
+        );
+        assert_eq!(
+            r.on_update.as_deref(),
+            Some("set null"),
+            "{to}:\n{}",
+            conv.output
+        );
+        assert_eq!(
+            (conv.fidelity.refs.kept, conv.fidelity.refs.total),
+            (1, 1),
+            "{to}"
+        );
+        assert!(conv.fidelity.idempotent, "{to}");
+    }
+}
+
+#[test]
+fn sql_on_delete_reaches_dbml() {
+    let sql = "CREATE TABLE users (id int PRIMARY KEY);\n\
+               CREATE TABLE orders (id int PRIMARY KEY, \
+               user_id int REFERENCES users(id) ON DELETE CASCADE);";
+    let conv = Registry::with_defaults()
+        .convert_explicit(sql, &FormatId::new("sql"), &FormatId::new("dbml"))
+        .unwrap();
+    assert!(
+        conv.output
+            .contains("Ref: orders.user_id > users.id [delete: cascade]"),
+        "{}",
+        conv.output
+    );
+}
