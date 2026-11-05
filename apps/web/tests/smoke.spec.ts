@@ -1,8 +1,14 @@
 import { expect, test } from '@playwright/test';
 
-test('landing links to the workspace', async ({ page }) => {
+test('landing: live demo runs the real core, and links to the workspace', async ({ page }) => {
 	await page.goto('/');
-	await page.getByRole('link', { name: /open the workspace/i }).click();
+	const out = page.getByLabel('Converted output');
+	await expect(out).toContainText('CREATE TABLE users');
+	await page.getByRole('tab', { name: 'Prisma' }).click();
+	await expect(out).toContainText('model users');
+	await page.getByLabel('DBML input').fill('Table tags {\n  id integer [pk]\n}\n');
+	await expect(out).toContainText('model tags');
+	await page.getByRole('link', { name: /open the workspace/i }).first().click();
 	await expect(page).toHaveURL(/\/app$/);
 });
 
@@ -117,16 +123,22 @@ test('new project and delete', async ({ page }) => {
 	await expect(nodes).toHaveCount(2);
 });
 
-test('sign-in gates import and download when it is enabled', async ({ page }) => {
+test('sign-in gates import, copy and download when it is enabled', async ({ page }) => {
 	await page.route('**/auth/me', (r) => r.fulfill({ json: { enabled: true, user: null } }));
 	await page.route('**/auth/login**', (r) => r.fulfill({ contentType: 'text/html', body: '<p>gatehouse</p>' }));
 	await page.goto('/app');
 	await expect(page.locator('.svelte-flow__node-table')).toHaveCount(2);
 	await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible();
 
-	// copy stays free; download asks for sign-in and redirects to /auth/login
+	// copy and download both ask for sign-in and redirect to /auth/login
 	await page.getByRole('button', { name: /Export/ }).click();
-	await expect(page.getByRole('menuitem', { name: /Copy as SQL/ })).toBeVisible();
+	await expect(page.getByRole('menuitem', { name: /Copy as SQL/ })).toContainText('sign in');
+	await page.getByRole('menuitem', { name: /Copy as SQL/ }).click();
+	await expect(page.getByRole('status')).toContainText('Sign in with CodeCora ID to copy');
+	await page.waitForURL(/\/auth\/login\?return_to=%2Fapp$/);
+	await page.goto('/app');
+	await expect(page.locator('.svelte-flow__node-table')).toHaveCount(2);
+	await page.getByRole('button', { name: /Export/ }).click();
 	await page.getByRole('menuitem', { name: /Download Prisma/ }).click();
 	await expect(page.getByRole('status')).toContainText('Sign in with CodeCora ID');
 	await page.waitForURL(/\/auth\/login\?return_to=%2Fapp$/);

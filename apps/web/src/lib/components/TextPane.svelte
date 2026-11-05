@@ -2,12 +2,15 @@
 	import Editor from './Editor.svelte';
 	import { ws } from '../workspace.svelte';
 	import { copy } from '../clipboard';
+	import { auth } from '../auth.svelte';
 
 	// editable: text-first input pane. Otherwise: generated, read-only output (canvas-first).
 	let { editable }: { editable: boolean } = $props();
 
 	let copied = $state(false);
 	async function doCopy() {
+		// copying out of the workspace needs sign-in, like import and download
+		if (!auth.mayTransfer) return auth.signIn('/app');
 		copied = await copy(ws.text);
 		setTimeout(() => (copied = false), 1500);
 	}
@@ -19,7 +22,7 @@
 		{#if editable}
 			<span class="state live">● autosync {Math.round(ws.parseMs)}ms</span>
 		{:else}
-			<button class="copy" onclick={doCopy}>{copied ? 'Copied ✓' : 'Copy'}</button>
+			<button class="copy" onclick={doCopy}>{copied ? 'Copied ✓' : auth.mayTransfer ? 'Copy' : 'Sign in to copy'}</button>
 		{/if}
 	</div>
 	<Editor value={ws.text} readonly={!editable} label="{ws.format} source" onchange={(v) => ws.setText(v)} />

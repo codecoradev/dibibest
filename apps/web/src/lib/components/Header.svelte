@@ -33,7 +33,7 @@
 		setTimeout(() => (notice = null), 4000);
 	}
 
-	/** Import and download need sign-in when the deployment has it enabled. */
+	/** Import, copy and download need sign-in when the deployment has it enabled. */
 	function gate(action: string): boolean {
 		if (auth.mayTransfer) return true;
 		showProjects = false;
@@ -102,7 +102,7 @@
 	});
 
 	async function exportAs(to: string) {
-		if (!ws.erd) return;
+		if (!ws.erd || !gate('copy schemas')) return;
 		const r = to === ws.format ? { ok: true as const, output: ws.text } : await convert(JSON.stringify(ws.erd), 'erdjson', to);
 		if (!r.ok) return (ws.error = r.error);
 		copied = (await copy(r.output)) ? to : null;
@@ -185,7 +185,9 @@
 		{#if showExport}
 			<div class="menu" role="menu">
 				{#each EXPORTS as f (f.id)}
-					<button role="menuitem" onclick={() => exportAs(f.id)}>Copy as {f.label}</button>
+					<button role="menuitem" onclick={() => exportAs(f.id)}
+						>Copy as {f.label}{#if !auth.mayTransfer}<span class="fmt">sign in</span>{/if}</button
+					>
 				{/each}
 				<div class="sep" role="separator"></div>
 				{#each DOWNLOADS as f (f.id)}

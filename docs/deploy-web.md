@@ -21,8 +21,9 @@ Background and decisions: epic #52.
 The route files are in `apps/web/functions/`; the logic and its unit
 tests are in `apps/web/server/` (`bun run test:server`).
 
-**Sign-in gates only import and download.** Editing, converting, copying and
-local projects work without an account. The gate is a UI funnel for usage
+**Sign-in gates import, copy and download** (owner decision 2026-11-05), even
+though projects stay in the browser. Editing, converting, the diagram, the
+fidelity report and local projects work without an account. The gate is a UI funnel for usage
 tracking (sign-ins are logged per client by Gatehouse), not a security
 boundary: conversion runs in the browser.
 
