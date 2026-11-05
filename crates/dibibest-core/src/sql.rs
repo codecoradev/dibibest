@@ -32,38 +32,40 @@ impl SqlCodec {
         SqlCodec { dialect }
     }
 
-    /// Identifier quoting: backticks for MySQL; PG/SQLite stay bare (as before).
+    /// Quote ONE identifier (column, index, or one part of a table name). A dot
+    /// is part of the name here: `"v1.2"` stays a single column.
+    /// MySQL: always backticks. PG/SQLite: plain names stay bare (unchanged
+    /// output); anything else — spaces, dashes, dots, a leading digit, reserved
+    /// words — is double-quoted so the emitted DDL re-parses. An already-quoted
+    /// name is left alone.
     fn q(&self, ident: &str) -> String {
         if self.dialect == Dialect::MySql {
-            // per dotted part, so `billing.plan` stays schema `billing`, table `plan`
-            ident
-                .split('.')
-                .map(|p| format!("`{}`", p.replace('`', "``")))
-                .collect::<Vec<_>>()
-                .join(".")
-        } else {
-            // Plain names stay bare (unchanged output); anything else — spaces,
-            // dashes, a leading digit — is double-quoted per dotted part, so the
-            // emitted DDL re-parses. Already-quoted parts are left alone.
-            ident
-                .split('.')
-                .map(|p| {
-                    let plain = p
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-                        && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                        && !is_reserved(p);
-                    let quoted = p.len() >= 2 && p.starts_with('"') && p.ends_with('"');
-                    if plain || quoted {
-                        p.to_string()
-                    } else {
-                        format!("\"{}\"", p.replace('"', "\"\""))
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(".")
+            return format!("`{}`", ident.replace('`', "``"));
         }
+        let plain = ident
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && ident.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !is_reserved(ident);
+        let quoted = ident.len() >= 2 && ident.starts_with('"') && ident.ends_with('"');
+        if plain || quoted {
+            ident.to_string()
+        } else {
+            format!("\"{}\"", ident.replace('"', "\"\""))
+        }
+    }
+
+    /// Quote a table name, which may be schema-qualified: each dotted part is
+    /// quoted separately (`billing.plans` → `` `billing`.`plans` `` on MySQL).
+    /// The DBML codec already reads a dotted table name as schema.table (see
+    /// docs/dbml-gaps.md), so this matches the IR's meaning.
+    fn qt(&self, table: &str) -> String {
+        table
+            .split('.')
+            .map(|p| self.q(p))
+            .collect::<Vec<_>>()
+            .join(".")
     }
 
     fn qs(&self, idents: &[String]) -> String {
@@ -302,7 +304,7 @@ impl Codec for SqlCodec {
                 let mut fk = format!(
                     "  FOREIGN KEY ({}) REFERENCES {}({})",
                     self.qs(fk_cols),
-                    self.q(pk_table),
+                    self.qt(pk_table),
                     self.qs(&pk_cols)
                 );
                 for (when, act) in [("DELETE", &r.on_delete), ("UPDATE", &r.on_update)] {
@@ -315,7 +317,7 @@ impl Codec for SqlCodec {
             let _ = writeln!(
                 out,
                 "CREATE TABLE {} (\n{}\n);",
-                self.q(&t.name),
+                self.qt(&t.name),
                 lines.join(",\n")
             );
             for idx in &t.indexes {
@@ -355,7 +357,7 @@ impl Codec for SqlCodec {
                     "{} {} ON {} ({}){};",
                     kw,
                     self.q(&name),
-                    self.q(&t.name),
+                    self.qt(&t.name),
                     target,
                     pred
                 );

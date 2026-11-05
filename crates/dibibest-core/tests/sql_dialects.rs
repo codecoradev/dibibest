@@ -188,3 +188,27 @@ fn mysql_quotes_schema_qualified_names_per_part() {
     );
     assert_eq!((conv.fidelity.refs.kept, conv.fidelity.refs.total), (1, 1));
 }
+
+#[test]
+fn dotted_column_name_stays_one_identifier() {
+    // A dot inside a column name is not a schema separator (CodeCora finding on #48).
+    let src = "Table t {\n  id int [pk]\n  \"v1.2\" int\n}\n";
+    let reg = dibibest_core::Registry::with_defaults();
+    for (to, want) in [
+        ("sql", "\"v1.2\" int"),
+        ("sql:sqlite", "\"v1.2\" int"),
+        ("sql:mysql", "`v1.2` int"),
+    ] {
+        let id = dibibest_core::FormatId::new(to);
+        let conv = reg
+            .convert_explicit(src, &dibibest_core::FormatId::new("dbml"), &id)
+            .unwrap();
+        assert!(conv.output.contains(want), "{to}:\n{}", conv.output);
+        let back = reg.parse(&conv.output, &id).unwrap();
+        assert!(
+            back.tables[0].columns.iter().any(|c| c.name == "v1.2"),
+            "{to}"
+        );
+        assert_eq!(conv.fidelity.columns.kept, 2, "{to}");
+    }
+}
