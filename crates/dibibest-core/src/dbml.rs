@@ -514,7 +514,8 @@ fn parse_index_line(l: &str) -> Option<(IndexDef, Vec<String>)> {
     if inner.contains('`') || inner.contains('(') {
         idx.expr = Some(inner.to_string());
     } else {
-        idx.columns = inner.split(',').map(|c| c.trim().to_string()).collect();
+        // index columns are identifiers like any column: store them unquoted
+        idx.columns = inner.split(',').map(unquote_ident).collect();
     }
     let mut unknown = Vec::new();
     if let Some(settings) = bracket_inner(rest) {
@@ -673,7 +674,8 @@ fn emit_dbml(ir: &SchemaIR) -> Result<String, CoreError> {
                 let cols = if idx.columns.is_empty() {
                     format!("({})", idx.expr.as_deref().unwrap_or(""))
                 } else {
-                    format!("({})", idx.columns.join(", "))
+                    let cols: Vec<String> = idx.columns.iter().map(|c| quote_ident(c)).collect();
+                    format!("({})", cols.join(", "))
                 };
                 let mut settings: Vec<String> = Vec::new();
                 if idx.unique {

@@ -36,8 +36,8 @@ impl SqlCodec {
     /// is part of the name here: `"v1.2"` stays a single column.
     /// MySQL: always backticks. PG/SQLite: plain names stay bare (unchanged
     /// output); anything else — spaces, dashes, dots, a leading digit, reserved
-    /// words — is double-quoted so the emitted DDL re-parses. An already-quoted
-    /// name is left alone.
+    /// words — is double-quoted with inner `"` doubled, so the emitted DDL
+    /// re-parses and a name can never break out of its quotes.
     fn q(&self, ident: &str) -> String {
         if self.dialect == Dialect::MySql {
             return format!("`{}`", ident.replace('`', "``"));
@@ -48,8 +48,7 @@ impl SqlCodec {
             .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
             && ident.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
             && !is_reserved(ident);
-        let quoted = ident.len() >= 2 && ident.starts_with('"') && ident.ends_with('"');
-        if plain || quoted {
+        if plain {
             ident.to_string()
         } else {
             format!("\"{}\"", ident.replace('"', "\"\""))

@@ -212,3 +212,44 @@ fn dotted_column_name_stays_one_identifier() {
         assert_eq!(conv.fidelity.columns.kept, 2, "{to}");
     }
 }
+
+#[test]
+fn quotes_inside_a_name_cannot_break_out() {
+    // Cora finding on #48: a name that starts and ends with `"` used to pass
+    // through raw, so `"x" int, "y"` became two column definitions.
+    let src = "CREATE TABLE t (id int PRIMARY KEY, \"\"\"x\"\" int, \"\"y\"\"\" int);";
+    let reg = dibibest_core::Registry::with_defaults();
+    for to in ["sql", "sql:sqlite", "sql:mysql"] {
+        let id = dibibest_core::FormatId::new(to);
+        let conv = reg
+            .convert_explicit(src, &dibibest_core::FormatId::new("sql"), &id)
+            .unwrap();
+        let back = reg.parse(&conv.output, &id).unwrap();
+        let names: Vec<&str> = back.tables[0]
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, ["id", "\"x\" int, \"y\""], "{to}:\n{}", conv.output);
+    }
+}
+
+#[test]
+fn dbml_index_columns_are_unquoted_identifiers() {
+    let src = "Table \"User Accounts\" {\n  ID int [pk]\n  \"e-mail\" varchar\n\n  \
+               indexes {\n    (\"e-mail\", ID) [name: 'ua']\n  }\n}\n";
+    let reg = dibibest_core::Registry::with_defaults();
+    let ir = reg
+        .parse(src, &dibibest_core::FormatId::new("dbml"))
+        .unwrap();
+    assert_eq!(ir.tables[0].indexes[0].columns, ["e-mail", "ID"]);
+    let mysql = reg
+        .convert_explicit(
+            src,
+            &dibibest_core::FormatId::new("dbml"),
+            &dibibest_core::FormatId::new("sql:mysql"),
+        )
+        .unwrap()
+        .output;
+    assert!(mysql.contains("(`e-mail`, `ID`)"), "{mysql}");
+}
