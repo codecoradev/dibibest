@@ -33,6 +33,8 @@ Corpus: `crates/dibibest-core/tests/corpus/*.dbml`, gate ≥95% in
 | Composite PK | `(a, b) [pk]` in `indexes` | Kept as a normal index plus the `pk` unknown on the table. |
 | Comments | `// text` | Dropped (except `// unknown:` lines). |
 | Index of one bare column | `name` in `indexes` | `(name)` |
+| Index key with expressions / ordering | `` (`lower(email)`) ``, `` (`id DESC`) ``, `` (a, `b DESC`) `` | Stored as a SQL key list (`(lower(email))`, `id DESC`, `a, b DESC`); emitted back in the same DBML form. A backticked bare column (`` (`a`) ``) becomes `(a)`. |
+| Partial index | `` (`fired_at WHERE resolved = false`) `` | DBML has no `WHERE` syntax, so the predicate rides in the last backtick element; stored as key + `predicate`, emitted to SQL as `ON t (fired_at) WHERE resolved = false`. A predicate-only index (`` (`WHERE …`) ``) has no SQL form and is reported dropped. |
 
 ## Unsupported (parse error)
 

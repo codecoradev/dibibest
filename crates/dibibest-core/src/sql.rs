@@ -203,16 +203,19 @@ impl Codec for SqlCodec {
                 }),
                 Statement::CreateIndex(ci) => {
                     let table = object_name_to_string(&ci.table_name);
-                    let cols: Vec<String> = ci.columns.iter().map(index_col_str).collect();
                     if let Some(t) = ir.tables.iter_mut().find(|t| t.name == table) {
-                        t.indexes.push(IndexDef {
+                        let mut idx = IndexDef {
                             name: ci.name.as_ref().map(object_name_to_string),
-                            columns: cols,
+                            columns: Vec::new(),
                             unique: ci.unique,
-                            // partial-index predicate preserved verbatim (round-trips
-                            // as a DBML expression index)
-                            expr: ci.predicate.as_ref().map(|p| p.to_string()),
-                        });
+                            expr: None,
+                            predicate: ci.predicate.as_ref().map(|p| p.to_string()),
+                        };
+                        // `col`, `col DESC`, `(expr)`, `lower(x)` — same key model
+                        // as the DBML codec (see `set_index_key`)
+                        let parts = ci.columns.iter().map(index_key_part).collect();
+                        set_index_key(&mut idx, parts);
+                        t.indexes.push(idx);
                     }
                 }
                 _ => {}
@@ -223,6 +226,13 @@ impl Codec for SqlCodec {
 
     fn emit(&self, ir: &SchemaIR) -> Result<String, CoreError> {
         let mut out = String::new();
+        // index names are unique per schema: generated names must not collide
+        // with explicit ones or with each other (`idx_t_expr`, `idx_t_expr_2`)
+        let mut used_index_names: std::collections::HashSet<String> = ir
+            .tables
+            .iter()
+            .flat_map(|t| t.indexes.iter().filter_map(|i| i.name.clone()))
+            .collect();
         if self.dialect == Dialect::Postgres {
             for e in &ir.enums {
                 let vals: Vec<String> = e
@@ -323,33 +333,44 @@ impl Codec for SqlCodec {
                 // ponytail: MySQL has no partial/expression index form we emit —
                 // skip (never a silent plain index); Caps::expr_indexes=false makes
                 // the registry report the drop.
-                if idx.expr.is_some() && self.dialect == Dialect::MySql {
+                if (idx.expr.is_some() || idx.predicate.is_some()) && self.dialect == Dialect::MySql
+                {
                     continue;
                 }
-                let target = if idx.columns.is_empty() {
-                    idx.expr.clone().unwrap_or_default()
-                } else {
-                    self.qs(&idx.columns)
+                // key: quoted columns, or the canonical SQL key list (expressions
+                // already parenthesised by the IR). A key-less index (DBML
+                // `` (`WHERE …`) ``) has no SQL form: skip it, fidelity counts it.
+                let target = match (&idx.expr, idx.columns.is_empty()) {
+                    (Some(e), _) => e.clone(),
+                    (None, false) => self.qs(&idx.columns),
+                    (None, true) => continue,
                 };
-                // columns + expr = partial index: predicate goes in WHERE
-                let pred = match (&idx.expr, idx.columns.is_empty()) {
-                    (Some(p), false) => format!(" WHERE {p}"),
-                    _ => String::new(),
-                };
+                let pred = idx
+                    .predicate
+                    .as_ref()
+                    .map_or(String::new(), |p| format!(" WHERE {p}"));
                 let kw = if idx.unique {
                     "CREATE UNIQUE INDEX"
                 } else {
                     "CREATE INDEX"
                 };
                 let name = idx.name.clone().unwrap_or_else(|| {
-                    format!(
+                    let base: String = format!(
                         "idx_{}_{}",
                         t.name,
                         idx.columns.first().map_or("expr", String::as_str)
                     )
                     .chars()
                     .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-                    .collect()
+                    .collect();
+                    let mut name = base.clone();
+                    let mut n = 1;
+                    while used_index_names.contains(&name) {
+                        n += 1;
+                        name = format!("{base}_{n}");
+                    }
+                    used_index_names.insert(name.clone());
+                    name
                 });
                 let _ = writeln!(
                     out,
@@ -499,17 +520,30 @@ fn is_reserved(ident: &str) -> bool {
     RESERVED.contains(&ident.to_ascii_lowercase().as_str())
 }
 
+/// One `CREATE INDEX` key element from the AST: column or expression, then
+/// `[opclass] [ASC|DESC] [NULLS …]` in SQL order (sqlparser's Display puts the
+/// operator class after the ordering, which is not valid SQL).
+fn index_key_part(ic: &sqlparser::ast::IndexColumn) -> KeyPart {
+    let mut suffix: Vec<String> = Vec::new();
+    if let Some(oc) = &ic.operator_class {
+        suffix.push(oc.to_string());
+    }
+    let order = ic.column.options.to_string();
+    if !order.trim().is_empty() {
+        suffix.push(order.trim().to_string());
+    }
+    let suffix = (!suffix.is_empty()).then(|| suffix.join(" "));
+    match &ic.column.expr {
+        Expr::Identifier(id) => KeyPart::Column(id.value.clone(), suffix),
+        Expr::Nested(e) => KeyPart::Expr(e.to_string(), suffix),
+        other => KeyPart::Expr(other.to_string(), suffix),
+    }
+}
+
 /// Full dotted name: `billing.tenants` keeps its schema, so refs to it still
 /// match the table after a round-trip.
 fn object_name_to_string(o: &ObjectName) -> String {
     o.0.iter().map(part_str).collect::<Vec<_>>().join(".")
-}
-
-fn index_col_str(ic: &sqlparser::ast::IndexColumn) -> String {
-    match &ic.column.expr {
-        Expr::Identifier(id) => id.value.clone(),
-        other => other.to_string(),
-    }
 }
 
 fn render_type(dt: &DataType) -> String {

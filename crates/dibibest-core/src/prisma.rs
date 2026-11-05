@@ -630,6 +630,7 @@ fn resolve(
                         columns,
                         unique: is_unique,
                         expr: None,
+                        predicate: None,
                     });
                 }
                 other => t.unknown.push(format!("{other}({args})")),
@@ -883,6 +884,7 @@ fn emit_prisma(ir: &SchemaIR) -> String {
                 || ft.indexes.iter().any(|i| {
                     i.unique
                         && i.expr.is_none()
+                        && i.predicate.is_none()
                         && i.columns.len() == set.len()
                         && i.columns
                             .iter()
@@ -1000,7 +1002,7 @@ fn emit_prisma(ir: &SchemaIR) -> String {
         for idx in &t.indexes {
             // ponytail: expression/partial indexes have no Prisma form — dropped; the
             // registry reports it via Caps::expr_indexes = false.
-            if idx.expr.is_some() || idx.columns.is_empty() {
+            if idx.expr.is_some() || idx.predicate.is_some() || idx.columns.is_empty() {
                 continue;
             }
             if first {

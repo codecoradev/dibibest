@@ -253,3 +253,55 @@ fn dbml_index_columns_are_unquoted_identifiers() {
         .output;
     assert!(mysql.contains("(`e-mail`, `ID`)"), "{mysql}");
 }
+
+#[test]
+fn index_operator_class_and_ordering_round_trip() {
+    let src = "CREATE TABLE t (id int PRIMARY KEY, x text);\n\
+               CREATE INDEX ix ON t (x text_pattern_ops DESC);\n\
+               CREATE INDEX iy ON t (lower(x) DESC NULLS LAST);\n";
+    let reg = Registry::with_defaults();
+    for to in ["sql", "sql:sqlite", "dbml"] {
+        let c = reg.convert_explicit(src, &id("sql"), &id(to)).unwrap();
+        assert_eq!(
+            (c.fidelity.indexes.kept, c.fidelity.indexes.total),
+            (2, 2),
+            "{to}:\n{}",
+            c.output
+        );
+    }
+    let sql = reg
+        .convert_explicit(src, &id("sql"), &id("sql"))
+        .unwrap()
+        .output;
+    assert!(sql.contains("ON t (x text_pattern_ops DESC);"), "{sql}");
+    assert!(sql.contains("ON t ((lower(x)) DESC NULLS LAST);"), "{sql}");
+    // through DBML and back keeps the operator class and the ordering
+    let dbml = reg
+        .convert_explicit(src, &id("sql"), &id("dbml"))
+        .unwrap()
+        .output;
+    let back = reg
+        .convert_explicit(&dbml, &id("dbml"), &id("sql"))
+        .unwrap()
+        .output;
+    assert!(back.contains("ON t (x text_pattern_ops DESC);"), "{back}");
+}
+
+#[test]
+fn unnamed_expression_indexes_get_distinct_names() {
+    let src = "Table t {\n  id int [pk]\n  a int\n  b int\n\n  indexes {\n    \
+               (`lower(a::text)`)\n    (`b * 2`)\n  }\n}\n";
+    let reg = Registry::with_defaults();
+    let c = reg.convert_explicit(src, &id("dbml"), &id("sql")).unwrap();
+    assert!(
+        c.output.contains("CREATE INDEX idx_t_expr ON t"),
+        "{}",
+        c.output
+    );
+    assert!(
+        c.output.contains("CREATE INDEX idx_t_expr_2 ON t"),
+        "{}",
+        c.output
+    );
+    assert_eq!((c.fidelity.indexes.kept, c.fidelity.indexes.total), (2, 2));
+}

@@ -153,11 +153,12 @@ Yang **ditolak dengan error** (tidak pernah dibuang diam-diam) di DBML:
 multi-baris (`'''…'''`), relasi many-to-many (`<>`), `checks`, `TablePartial`,
 dan `Records`.
 
-Yang diketahui masih salah dan sedang diperbaiki:
+Yang diketahui belum didukung:
 
-- **Expression/partial index** (`` (`lower(email)`) ``, `` (`… WHERE …`) ``) ke SQL
-  belum menghasilkan SQL yang valid:
-  [#49](https://github.com/codecoradev/dibibest/issues/49).
+- **Expression/partial index** (`` (`lower(email)`) ``, `` (`fired_at WHERE resolved = false`) ``)
+  ditulis ke PostgreSQL dan SQLite (`((lower(email)))`, `… WHERE …`), tapi MySQL
+  dan Prisma tidak punya padanannya: index itu dibuang dan disebut di `dropped`.
+  Index tanpa kolom key (`` (`WHERE …`) ``) tidak bisa ditulis ke SQL sama sekali.
 - **Autoincrement ke PostgreSQL** belum ditulis (`SERIAL`/`IDENTITY`); MySQL dan
   SQLite sudah. Lihat [docs/sql-dialects.md](docs/sql-dialects.md).
 
