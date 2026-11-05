@@ -9,7 +9,7 @@ compatibility_date = "2026-10-01"
 # app keeps import/export open.
 [vars]
 OIDC_ISSUER = "https://identity.azfirazka.com/api/auth"
-OIDC_CLIENT_ID = ""
+OIDC_CLIENT_ID = "uRIkPQJsDYTQySsIYFaTYdioNIsLdLnt"
 
 # Secrets (never in this file), set once per project:
 #   wrangler pages secret put OIDC_CLIENT_SECRET --project-name dibibest
