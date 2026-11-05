@@ -117,8 +117,9 @@ export function extensionFor(format: string): string {
 }
 
 /** Trigger a browser download of `text` as `fileName`. */
-export function download(fileName: string, text: string): void {
-	const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+export function download(fileName: string, data: string | Blob): void {
+	const blob = typeof data === 'string' ? new Blob([data], { type: 'text/plain;charset=utf-8' }) : data;
+	const url = URL.createObjectURL(blob);
 	const a = Object.assign(document.createElement('a'), { href: url, download: fileName });
 	document.body.append(a);
 	a.click();

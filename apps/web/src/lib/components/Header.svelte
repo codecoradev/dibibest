@@ -19,6 +19,11 @@
 		{ id: 'prisma', label: 'Prisma' },
 		{ id: 'erdjson', label: 'ERD-JSON' }
 	];
+	const IMAGES = [
+		{ kind: 'png', theme: 'dark', label: 'Image (PNG, dark)' },
+		{ kind: 'png', theme: 'light', label: 'Image (PNG, light)' },
+		{ kind: 'svg', theme: 'dark', label: 'Image (SVG)' }
+	] as const;
 	const SAVE_LABEL = { saved: 'Saved locally', saving: 'Saving…', unsaved: 'Unsaved changes', error: 'Not saved' };
 
 	let showFidelity = $state(false);
@@ -62,6 +67,13 @@
 		showExport = false;
 		const err = await ws.exportFile(to);
 		if (err) flash(`Export failed: ${err}`);
+	}
+
+	async function downloadImage(kind: 'png' | 'svg', theme: 'dark' | 'light') {
+		if (!gate('download images')) return;
+		showExport = false;
+		const err = await ws.exportImage(kind, theme);
+		if (err) flash(`Image export failed: ${err}`);
 	}
 
 	async function rename() {
@@ -187,6 +199,12 @@
 				{#each EXPORTS as f (f.id)}
 					<button role="menuitem" onclick={() => exportAs(f.id)}
 						>Copy as {f.label}{#if !auth.mayTransfer}<span class="fmt">sign in</span>{/if}</button
+					>
+				{/each}
+				<div class="sep" role="separator"></div>
+				{#each IMAGES as im (im.label)}
+					<button role="menuitem" onclick={() => downloadImage(im.kind, im.theme)}
+						>Download {im.label}{#if !auth.mayTransfer}<span class="fmt">sign in</span>{/if}</button
 					>
 				{/each}
 				<div class="sep" role="separator"></div>
@@ -480,6 +498,8 @@
 		top: 40px;
 		z-index: 30;
 		min-width: 180px;
+		max-height: calc(100dvh - 120px);
+		overflow-y: auto;
 		display: flex;
 		flex-direction: column;
 		background: var(--bg-2);

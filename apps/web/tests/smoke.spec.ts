@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 
 test('landing: live demo runs the real core, and links to the workspace', async ({ page }) => {
 	await page.goto('/');
@@ -158,6 +159,20 @@ test('a signed-in user can download, and sees Sign out', async ({ page }) => {
 		page.getByRole('menuitem', { name: 'Download DBML' }).click()
 	]);
 	expect(file.suggestedFilename()).toBe('shop-demo.dbml');
+
+	// the diagram as an image (#60): PNG and SVG
+	for (const [item, name, magic] of [
+		['Download Image (PNG, dark)', 'shop-demo.png', '\x89PNG'],
+		['Download Image (PNG, light)', 'shop-demo-light.png', '\x89PNG'],
+		['Download Image (SVG)', 'shop-demo.svg', '<svg']
+	] as const) {
+		await page.getByRole('button', { name: /Export/ }).click();
+		const [img] = await Promise.all([page.waitForEvent('download'), page.getByRole('menuitem', { name: item }).click()]);
+		expect(img.suggestedFilename()).toBe(name);
+		const bytes = await readFile((await img.path())!);
+		expect(bytes.subarray(0, magic.length).toString('latin1')).toBe(magic);
+		if (name.endsWith('.svg')) expect(bytes.toString()).toContain('>orders<');
+	}
 });
 
 test.describe('phone', () => {
