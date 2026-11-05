@@ -80,8 +80,14 @@
         "from": { "$ref": "#/$defs/end" },
         "to": { "$ref": "#/$defs/end" },
         "kind": { "enum": ["many-to-one", "one-to-one", "one-to-many"] },
-        "label": { "type": "string" }
+        "label": { "type": "string" },
+        "onDelete": { "$ref": "#/$defs/action" },
+        "onUpdate": { "$ref": "#/$defs/action" }
       }
+    },
+    "action": {
+      "enum": ["cascade", "set null", "set default", "restrict", "no action"],
+      "description": "Referential action, lowercase SQL spelling"
     },
     "end": {
       "type": "object",

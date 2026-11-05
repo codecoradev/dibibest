@@ -78,6 +78,37 @@ pub struct Ref {
     pub kind: RefKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Referential action on delete, normalized by [`normalize_action`]
+    /// (`cascade`, `set null`, `set default`, `restrict`, `no action`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_delete: Option<String>,
+    /// Referential action on update, same vocabulary as `on_delete`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_update: Option<String>,
+}
+
+/// Normalize a referential action from any codec's spelling (`CASCADE`,
+/// `set null`, `SetNull`, `set_null`, `NoAction`, …) to the IR vocabulary.
+/// Returns `None` for anything that is not a known action.
+pub fn normalize_action(s: &str) -> Option<String> {
+    let k: String = s
+        .trim()
+        .trim_matches(|c| c == '\'' || c == '"')
+        .chars()
+        .filter(|c| c.is_ascii_alphabetic())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    Some(
+        match k.as_str() {
+            "cascade" => "cascade",
+            "restrict" => "restrict",
+            "setnull" => "set null",
+            "setdefault" => "set default",
+            "noaction" => "no action",
+            _ => return None,
+        }
+        .to_string(),
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

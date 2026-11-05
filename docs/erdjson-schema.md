@@ -20,7 +20,9 @@ never parses DBML/SQL/Prisma, it consumes this. Machine-readable schema:
     "from": { "table": "posts", "columns": ["user_id"] },   // node ids
     "to":   { "table": "users", "columns": ["id"] },
     "kind": "many-to-one",         // | one-to-one | one-to-many
-    "label": "optional"
+    "label": "optional",
+    "onDelete": "cascade",         // optional: cascade | set null | set default | restrict | no action
+    "onUpdate": "no action"        // optional, same values
   }],
   "meta": { "layout": null }       // null | "grid" | "elk" | "dagre" | "manual"
 }

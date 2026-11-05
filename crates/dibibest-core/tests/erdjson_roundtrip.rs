@@ -120,3 +120,23 @@ fn parse_rejects_dangling_edge_and_bad_version() {
     let v2 = r#"{"version":2,"nodes":[],"edges":[],"meta":{"layout":null}}"#;
     assert!(reg.parse(v2, &erd).is_err());
 }
+
+#[test]
+fn unknown_edge_action_is_a_parse_error() {
+    // An action the IR cannot represent must fail loudly, never vanish (#43).
+    let reg = dibibest_core::Registry::with_defaults();
+    let erd = reg
+        .convert_explicit(
+            "Table a {\n  id int [pk]\n}\nTable b {\n  a_id int\n}\nRef: b.a_id > a.id [delete: cascade]\n",
+            &dibibest_core::FormatId::new("dbml"),
+            &dibibest_core::FormatId::new("erdjson"),
+        )
+        .unwrap()
+        .output
+        .replace("\"cascade\"", "\"explode\"");
+    let err = reg
+        .parse(&erd, &dibibest_core::FormatId::new("erdjson"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unknown onDelete `explode`"), "{err}");
+}

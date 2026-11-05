@@ -69,7 +69,7 @@ fn unknown_settings_are_preserved_and_round_trip() {
     let reg = Registry::with_defaults();
     let dbml = reg.codec(&FormatId::new("dbml")).unwrap();
     let src = "Table t [headercolor: #fff] {\n  id int [pk, color: red]\n  \
-               indexes {\n    (id) [type: hash]\n  }\n}\nRef: t.id > t.id [delete: cascade]\n";
+               indexes {\n    (id) [type: hash]\n  }\n}\nRef: t.id > t.id [delete: cascade, color: #f00]\n";
     let ir = dbml.parse(src).unwrap();
     assert_eq!(ir.tables[0].columns[0].unknown, ["color: red"]);
     assert_eq!(
@@ -77,9 +77,13 @@ fn unknown_settings_are_preserved_and_round_trip() {
         ["headercolor: #fff", "type: hash"],
         "table + index unknowns"
     );
-    assert_eq!(ir.unknown, ["delete: cascade"]);
+    // `delete:` is a referential action on the ref (#43); only the truly
+    // unknown ref setting stays in the passthrough store.
+    assert_eq!(ir.refs[0].on_delete.as_deref(), Some("cascade"));
+    assert_eq!(ir.unknown, ["color: #f00"]);
     let out = dbml.emit(&ir).unwrap();
     assert!(out.contains("// unknown: color: red"));
-    assert!(out.contains("// unknown: delete: cascade"));
+    assert!(out.contains("Ref: t.id > t.id [delete: cascade]"));
+    assert!(out.contains("// unknown: color: #f00"));
     assert_eq!(dbml.parse(&out).unwrap(), ir);
 }

@@ -6,7 +6,7 @@
 //! in the IR `unknown` passthrough (`erdjson:*` lines) and `emit` restores it —
 //! that is what keeps ERD-JSON → IR → ERD-JSON byte-identical.
 
-use crate::ir::{Column, EnumDef, IndexDef, Ref, RefKind, SchemaIR, Table};
+use crate::ir::{normalize_action, Column, EnumDef, IndexDef, Ref, RefKind, SchemaIR, Table};
 use crate::{Caps, Codec, CoreError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
@@ -86,6 +86,10 @@ struct Edge {
     kind: RefKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     label: Option<String>,
+    #[serde(rename = "onDelete", default, skip_serializing_if = "Option::is_none")]
+    on_delete: Option<String>,
+    #[serde(rename = "onUpdate", default, skip_serializing_if = "Option::is_none")]
+    on_update: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -211,6 +215,8 @@ impl Codec for ErdJsonCodec {
                 },
                 kind: r.kind,
                 label: r.name.clone(),
+                on_delete: r.on_delete.clone(),
+                on_update: r.on_update.clone(),
             })
             .collect();
         let key = |e: &Edge| {
@@ -301,6 +307,8 @@ impl Codec for ErdJsonCodec {
                 to_cols: e.to.columns.clone(),
                 kind: e.kind,
                 name: e.label.clone(),
+                on_delete: edge_action(e, "onDelete", &e.on_delete)?,
+                on_update: edge_action(e, "onUpdate", &e.on_update)?,
             });
         }
         ir.enums = doc.enums;
@@ -342,4 +350,18 @@ pub fn apply_layout(doc: &mut Value, strategy: LayoutStrategy) -> Result<(), Cor
     }
     doc["meta"]["layout"] = Value::String(label.into());
     Ok(())
+}
+
+/// A present-but-unknown action is a contract violation: fail loudly rather than
+/// drop it (the canvas store must never lose a referential action silently).
+fn edge_action(e: &Edge, key: &str, v: &Option<String>) -> Result<Option<String>, CoreError> {
+    match v.as_deref() {
+        None => Ok(None),
+        Some(a) => normalize_action(a)
+            .map(Some)
+            .ok_or_else(|| CoreError::Parse {
+                format: FMT,
+                message: format!("edge `{}`: unknown {key} `{a}`", e.id),
+            }),
+    }
 }

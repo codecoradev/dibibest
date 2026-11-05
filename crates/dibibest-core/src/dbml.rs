@@ -509,8 +509,9 @@ fn parse_index_line(l: &str) -> Option<(IndexDef, Vec<String>)> {
     Some((idx, unknown))
 }
 
-/// `a.b > c.d [settings]`, composite `a.(x, y) > c.(x, y)`. Ref settings are
-/// all unknown to the IR and returned for preservation.
+/// `a.b > c.d [settings]`, composite `a.(x, y) > c.(x, y)`. `delete:` / `update:`
+/// become the ref's referential actions; other settings are returned for
+/// preservation as unknowns.
 fn parse_ref_body(body: &str) -> Option<(Ref, Vec<String>)> {
     let body = body.trim();
     let (op, kind) = outside_quotes(body).find_map(|(i, c)| match c {
@@ -530,6 +531,26 @@ fn parse_ref_body(body: &str) -> Option<(Ref, Vec<String>)> {
     };
     let (ft, fc) = ref_endpoint(&body[..op])?;
     let (tt, tc) = ref_endpoint(rhs)?;
+    let (mut on_delete, mut on_update) = (None, None);
+    let unknown = unknown
+        .into_iter()
+        .filter(|u| {
+            let (slot, v) = if let Some(v) = u.strip_prefix("delete:") {
+                (&mut on_delete, v)
+            } else if let Some(v) = u.strip_prefix("update:") {
+                (&mut on_update, v)
+            } else {
+                return true;
+            };
+            match normalize_action(v) {
+                Some(a) => {
+                    *slot = Some(a);
+                    false
+                }
+                None => true, // not a known action: keep it verbatim
+            }
+        })
+        .collect();
     Some((
         Ref {
             from_table: ft,
@@ -538,6 +559,8 @@ fn parse_ref_body(body: &str) -> Option<(Ref, Vec<String>)> {
             to_cols: tc,
             kind,
             name: None,
+            on_delete,
+            on_update,
         },
         unknown,
     ))
@@ -661,13 +684,23 @@ fn emit_dbml(ir: &SchemaIR) -> Result<String, CoreError> {
             .name
             .as_ref()
             .map_or(String::new(), |n| format!(" {}", quote_ident(n)));
+        let settings: Vec<String> = [("delete", &r.on_delete), ("update", &r.on_update)]
+            .into_iter()
+            .filter_map(|(k, v)| v.as_ref().map(|v| format!("{k}: {v}")))
+            .collect();
+        let settings = if settings.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", settings.join(", "))
+        };
         let _ = writeln!(
             out,
-            "Ref{}: {} {} {}",
+            "Ref{}: {} {} {}{}",
             name,
             ref_endpoint_str(&r.from_table, &r.from_cols),
             op,
-            ref_endpoint_str(&r.to_table, &r.to_cols)
+            ref_endpoint_str(&r.to_table, &r.to_cols),
+            settings
         );
     }
     for u in &ir.unknown {
