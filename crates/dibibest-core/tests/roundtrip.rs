@@ -195,3 +195,57 @@ fn block_border_error_reports_physical_line() {
         .to_string();
     assert!(err.contains("line 3"), "{err}");
 }
+
+/// dbdiagram.io's default sample: `<` (one-to-many) refs put the FK on the
+/// right-hand ("many") table. Regression for #42.
+const DBDIAGRAM_SAMPLE: &str = r#"
+Table follows {
+  following_user_id integer
+  followed_user_id integer
+  created_at timestamp
+}
+
+Table users {
+  id integer [primary key]
+  username varchar
+}
+
+Table posts {
+  id integer [primary key]
+  user_id integer [not null]
+}
+
+Ref user_posts: posts.user_id > users.id // many-to-one
+
+Ref: users.id < follows.following_user_id
+
+Ref: users.id < follows.followed_user_id
+"#;
+
+#[test]
+fn one_to_many_ref_puts_fk_on_many_side_in_sql() {
+    let reg = Registry::with_defaults();
+    let conv = reg
+        .convert_explicit(
+            DBDIAGRAM_SAMPLE,
+            &FormatId::new("dbml"),
+            &FormatId::new("sql"),
+        )
+        .unwrap();
+    let sql = &conv.output;
+    let block = |t: &str| {
+        let start = sql.find(&format!("CREATE TABLE {t} (")).unwrap();
+        let end = start + sql[start..].find(");").unwrap();
+        sql[start..end].to_string()
+    };
+    assert!(
+        !block("users").contains("FOREIGN KEY"),
+        "users must not carry FKs:\n{sql}"
+    );
+    let follows = block("follows");
+    assert!(follows.contains("FOREIGN KEY (following_user_id) REFERENCES users(id)"));
+    assert!(follows.contains("FOREIGN KEY (followed_user_id) REFERENCES users(id)"));
+    assert!(block("posts").contains("FOREIGN KEY (user_id) REFERENCES users(id)"));
+    assert_eq!(conv.fidelity.refs.kept, 3);
+    assert_eq!(conv.fidelity.refs.total, 3);
+}

@@ -3,7 +3,7 @@
 //! first-class [`Fidelity`]. Formats are plugins: implement [`Codec`], register.
 
 use crate::sql::{Dialect, SqlCodec};
-use crate::{Caps, Codec, CoreError, SchemaIR, SourceCounts};
+use crate::{Caps, Codec, CoreError, RefKind, SchemaIR, SourceCounts};
 use serde::{Deserialize, Serialize};
 
 /// Convenience wrapper so callers can pass `"dbml"`, `Format::Dbml`, or their
@@ -148,7 +148,9 @@ impl Registry {
         let kept = SourceCounts {
             tables: reparsed.tables.len(),
             columns: reparsed.tables.iter().map(|t| t.columns.len()).sum(),
-            refs: reparsed.refs.len(),
+            // Refs are matched by normalized endpoints, not counted: a ref that
+            // comes back reversed or on the wrong columns is not "kept".
+            refs: matched_refs(&ir, &reparsed),
             indexes: reparsed.tables.iter().map(|t| t.indexes.len()).sum(),
         };
         // A scan can under-count (never over-count): trust whichever is larger.
@@ -210,6 +212,53 @@ impl Registry {
             Err(_) => false,
         }
     }
+}
+
+/// A ref as (FK table, FK cols) → (referenced table, referenced cols), lowercased.
+/// `OneToMany` is stored "one" side first, so it is swapped; omitted referenced
+/// columns resolve to the referenced table's primary key.
+type RefKey = (String, Vec<String>, String, Vec<String>);
+
+fn ref_keys(ir: &SchemaIR) -> Vec<RefKey> {
+    let lower = |v: &[String]| v.iter().map(|c| c.to_lowercase()).collect::<Vec<_>>();
+    ir.refs
+        .iter()
+        .map(|r| {
+            let (ft, fc, pt, pc) = if r.kind == RefKind::OneToMany {
+                (&r.to_table, &r.to_cols, &r.from_table, &r.from_cols)
+            } else {
+                (&r.from_table, &r.from_cols, &r.to_table, &r.to_cols)
+            };
+            let pc = if pc.is_empty() {
+                ir.table(pt)
+                    .map(|t| {
+                        t.columns
+                            .iter()
+                            .filter(|c| c.pk)
+                            .map(|c| c.name.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                pc.clone()
+            };
+            (ft.to_lowercase(), lower(fc), pt.to_lowercase(), lower(&pc))
+        })
+        .collect()
+}
+
+/// How many of `ir`'s refs reappear in `reparsed` (multiset match).
+fn matched_refs(ir: &SchemaIR, reparsed: &SchemaIR) -> usize {
+    let mut pool = ref_keys(reparsed);
+    ref_keys(ir)
+        .into_iter()
+        .filter(|k| {
+            pool.iter()
+                .position(|p| p == k)
+                .map(|i| pool.swap_remove(i))
+                .is_some()
+        })
+        .count()
 }
 
 fn report_caps_gaps(ir: &SchemaIR, _from: &FormatId, to: &dyn Codec) -> Vec<String> {
@@ -302,4 +351,109 @@ pub fn convert_explicit(
     to: &FormatId,
 ) -> Result<Conversion, CoreError> {
     Registry::with_defaults().convert_explicit(src, from, to)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::{Column, Ref, Table};
+
+    fn schema(refs: Vec<Ref>) -> SchemaIR {
+        let col = |n: &str, pk: bool| Column {
+            name: n.into(),
+            ty: "int".into(),
+            pk,
+            ..Column::default()
+        };
+        SchemaIR {
+            tables: vec![
+                Table {
+                    name: "users".into(),
+                    columns: vec![col("id", true)],
+                    ..Table::default()
+                },
+                Table {
+                    name: "follows".into(),
+                    columns: vec![col("user_id", false)],
+                    ..Table::default()
+                },
+            ],
+            refs,
+            ..SchemaIR::default()
+        }
+    }
+
+    fn r(ft: &str, fc: &str, tt: &str, tc: &str, kind: RefKind) -> Ref {
+        Ref {
+            from_table: ft.into(),
+            from_cols: vec![fc.into()],
+            to_table: tt.into(),
+            to_cols: if tc.is_empty() {
+                vec![]
+            } else {
+                vec![tc.into()]
+            },
+            kind,
+            name: None,
+        }
+    }
+
+    #[test]
+    fn refs_match_across_one_to_many_and_many_to_one() {
+        // DBML `users.id < follows.user_id` == SQL `follows.user_id -> users.id`.
+        let ir = schema(vec![r(
+            "users",
+            "id",
+            "follows",
+            "user_id",
+            RefKind::OneToMany,
+        )]);
+        let sql = schema(vec![r(
+            "follows",
+            "user_id",
+            "users",
+            "id",
+            RefKind::ManyToOne,
+        )]);
+        assert_eq!(matched_refs(&ir, &sql), 1);
+    }
+
+    #[test]
+    fn reversed_ref_is_not_kept() {
+        // Regression for #42: a count-based check called this "kept".
+        let ir = schema(vec![r(
+            "users",
+            "id",
+            "follows",
+            "user_id",
+            RefKind::OneToMany,
+        )]);
+        let reversed = schema(vec![r(
+            "users",
+            "id",
+            "follows",
+            "user_id",
+            RefKind::ManyToOne,
+        )]);
+        assert_eq!(matched_refs(&ir, &reversed), 0);
+    }
+
+    #[test]
+    fn omitted_referenced_cols_resolve_to_pk() {
+        let ir = schema(vec![r(
+            "follows",
+            "user_id",
+            "users",
+            "",
+            RefKind::ManyToOne,
+        )]);
+        let sql = schema(vec![r(
+            "follows",
+            "user_id",
+            "users",
+            "id",
+            RefKind::ManyToOne,
+        )]);
+        assert_eq!(matched_refs(&ir, &sql), 1);
+    }
 }
