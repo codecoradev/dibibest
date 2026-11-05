@@ -5,6 +5,7 @@
 	import Canvas from '../../lib/components/Canvas.svelte';
 	import Sidebar from '../../lib/components/Sidebar.svelte';
 	import { ws, type Layout } from '../../lib/workspace.svelte';
+	import { auth } from '../../lib/auth.svelte';
 
 	const ORDER: Layout[] = ['text', 'canvas', 'explorer'];
 	const STATUS: Record<Layout, string> = {
@@ -15,6 +16,7 @@
 
 	onMount(() => {
 		ws.boot();
+		auth.load();
 		// best effort: flush a pending autosave when the tab is hidden or closed
 		const flush = () => {
 			if (ws.saveState === 'unsaved') ws.saveNow();

@@ -116,3 +116,34 @@ test('new project and delete', async ({ page }) => {
 	await expect(page.getByRole('button', { name: 'Projects: shop-demo' })).toBeVisible();
 	await expect(nodes).toHaveCount(2);
 });
+
+test('sign-in gates import and download when it is enabled', async ({ page }) => {
+	await page.route('**/auth/me', (r) => r.fulfill({ json: { enabled: true, user: null } }));
+	await page.route('**/auth/login**', (r) => r.fulfill({ contentType: 'text/html', body: '<p>gatehouse</p>' }));
+	await page.goto('/app');
+	await expect(page.locator('.svelte-flow__node-table')).toHaveCount(2);
+	await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible();
+
+	// copy stays free; download asks for sign-in and redirects to /auth/login
+	await page.getByRole('button', { name: /Export/ }).click();
+	await expect(page.getByRole('menuitem', { name: /Copy as SQL/ })).toBeVisible();
+	await page.getByRole('menuitem', { name: /Download Prisma/ }).click();
+	await expect(page.getByRole('status')).toContainText('Sign in with CodeCora ID');
+	await page.waitForURL(/\/auth\/login\?return_to=%2Fapp$/);
+});
+
+test('a signed-in user can download, and sees Sign out', async ({ page }) => {
+	await page.route('**/auth/me', (r) =>
+		r.fulfill({ json: { enabled: true, user: { sub: 'u1', email: 'ana@example.com' } } })
+	);
+	await page.goto('/app');
+	await expect(page.locator('.svelte-flow__node-table')).toHaveCount(2);
+	await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
+	await expect(page.getByText('ana@example.com')).toBeVisible();
+	await page.getByRole('button', { name: /Export/ }).click();
+	const [file] = await Promise.all([
+		page.waitForEvent('download'),
+		page.getByRole('menuitem', { name: 'Download DBML' }).click()
+	]);
+	expect(file.suggestedFilename()).toBe('shop-demo.dbml');
+});

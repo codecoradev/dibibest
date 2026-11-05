@@ -138,8 +138,10 @@ perangkat.
 |---|---|
 | ![Fidelity report panel: kept/total for tables, columns, refs, indexes and round-trip idempotency](docs/screenshots/fidelity-panel.png) | ![Explorer layout: table list with search and visibility toggles next to the ERD canvas](docs/screenshots/explorer.png) |
 
-Simpan proyek (opsional, OFF secara default) memakai `crates/dibibest-api` dengan
-login OIDC. Lihat [docs/auth.md](docs/auth.md).
+Versi hosted (Cloudflare Pages) disiapkan di `dibibest.codecora.dev`, aktif setelah deploy pertama.
+Playground bebas dipakai tanpa akun; **Import** dan **Download** meminta login
+dengan CodeCora ID. Login berjalan lewat Pages Functions tanpa database (cookie
+bertanda tangan). Setup dan deploy: [docs/deploy-web.md](docs/deploy-web.md).
 
 ## Format
 
