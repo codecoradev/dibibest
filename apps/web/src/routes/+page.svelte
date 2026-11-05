@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { convert, type Fidelity } from '../lib/core';
+	import Logo from '../lib/components/Logo.svelte';
 
 	const REPO = 'https://github.com/codecoradev/dibibest';
 
@@ -124,7 +125,7 @@ cat schema.sql | dibibest convert --to prisma`;
 
 <div class="page">
 	<nav class="nav" aria-label="Main">
-		<a class="logo" href="/" aria-label="dibibest home"><span class="mark">db</span> dibibest</a>
+		<a class="logo" href="/" aria-label="dibibest home"><Logo size={26} /> dibibest</a>
 		<div class="links">
 			<a href="#fidelity">Fidelity</a>
 			<a href="#formats">Formats</a>
@@ -297,7 +298,7 @@ cat schema.sql | dibibest convert --to prisma`;
 	</section>
 
 	<footer class="footer">
-		<span><span class="mark sm">db</span> dibibest · MIT · by CodeCora</span>
+		<span class="fbrand"><Logo size={18} /> dibibest · MIT · by CodeCora</span>
 		<span class="flinks">
 			<a href={REPO}>GitHub</a>
 			<a href="{REPO}/issues/new">Report a bug</a>
@@ -342,23 +343,6 @@ cat schema.sql | dibibest convert --to prisma`;
 		gap: var(--sp-2);
 		font-weight: 700;
 		text-decoration: none;
-	}
-	.mark {
-		width: 24px;
-		height: 24px;
-		border-radius: var(--r-sm);
-		background: linear-gradient(135deg, var(--accent), #8a5cff);
-		display: inline-grid;
-		place-items: center;
-		font-size: 12px;
-		font-weight: 800;
-		color: #0b0d10;
-	}
-	.mark.sm {
-		width: 18px;
-		height: 18px;
-		font-size: 10px;
-		vertical-align: -3px;
 	}
 	.links {
 		display: none;
@@ -862,6 +846,11 @@ cat schema.sql | dibibest convert --to prisma`;
 		font-size: 13px;
 		color: var(--text-3);
 		border-top: 1px solid var(--line-soft);
+	}
+	.fbrand {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
 	}
 	.flinks {
 		display: flex;

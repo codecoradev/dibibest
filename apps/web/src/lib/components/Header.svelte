@@ -4,6 +4,7 @@
 	import { copy } from '../clipboard';
 	import { auth } from '../auth.svelte';
 	import FidelityPanel from './FidelityPanel.svelte';
+	import Logo from './Logo.svelte';
 
 	const LAYOUTS: { id: Layout; label: string; short: string }[] = [
 		{ id: 'text', label: '▤ Text-first', short: 'Text' },
@@ -113,7 +114,7 @@
 
 <header class="topbar">
 	<div class="brand">
-		<span class="mark">db</span> <span class="name">dibibest</span>
+		<Logo size={22} /> <span class="name">dibibest</span>
 		<div class="projects">
 			<button
 				class="project-name"
@@ -229,17 +230,6 @@
 		align-items: center;
 		gap: var(--sp-2);
 		font-weight: 650;
-	}
-	.mark {
-		width: 22px;
-		height: 22px;
-		border-radius: var(--r-sm);
-		background: linear-gradient(135deg, var(--accent), #8a5cff);
-		display: grid;
-		place-items: center;
-		font-size: 12px;
-		font-weight: 800;
-		color: #0b0d10;
 	}
 	.projects {
 		position: relative;

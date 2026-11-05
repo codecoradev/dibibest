@@ -1,3 +1,5 @@
+<p><img src="docs/logo.svg" width="64" height="64" alt="dibibest logo"></p>
+
 # dibibest
 
 **Convert database schemas bolak-balik**: DBML (dbdiagram.io) ⇄ SQL DDL
