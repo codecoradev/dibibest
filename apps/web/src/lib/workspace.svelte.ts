@@ -72,6 +72,8 @@ class Workspace {
 
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	#saveTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Bumped on every change; a save only reports "saved" for the latest. */
+	#rev = 0;
 	#seq = 0;
 
 	/** Open the last project, or the newest, or create the sample project. */
@@ -94,6 +96,7 @@ class Workspace {
 	/** Debounced autosave after any change to the text or the canvas. */
 	scheduleSave() {
 		if (!this.projectId) return;
+		this.#rev++;
 		this.saveState = 'unsaved';
 		clearTimeout(this.#saveTimer);
 		this.#saveTimer = setTimeout(() => this.saveNow(), SAVE_MS);
@@ -102,23 +105,33 @@ class Workspace {
 	async saveNow() {
 		clearTimeout(this.#saveTimer);
 		if (!this.projectId) return;
+		// Snapshot BEFORE the await: the user may switch, rename or delete the
+		// project, or keep typing, while IndexedDB writes.
+		const snap = {
+			id: this.projectId,
+			name: this.projectName,
+			format: this.format,
+			text: this.text,
+			erd: this.erd,
+			updatedAt: Date.now()
+		};
+		const rev = this.#rev;
 		this.saveState = 'saving';
 		try {
-			await saveProject({
-				id: this.projectId,
-				name: this.projectName,
-				format: this.format,
-				text: this.text,
-				erd: this.erd,
-				updatedAt: Date.now()
-			});
-			this.saveState = 'saved';
-			// update the list in memory: re-reading every project body on each
-			// autosave would be wasteful
-			const summary = { id: this.projectId, name: this.projectName, format: this.format, updatedAt: Date.now() };
-			this.projects = [summary, ...this.projects.filter((p) => p.id !== summary.id)];
+			await saveProject(snap);
 		} catch {
-			this.saveState = 'error';
+			if (snap.id === this.projectId) this.saveState = 'error';
+			return;
+		}
+		if (snap.id === this.projectId) {
+			// newer edits arrived during the write: their own save is scheduled
+			this.saveState = rev === this.#rev ? 'saved' : 'unsaved';
+		}
+		// Update the list in memory (re-reading every project body on each autosave
+		// would be wasteful). Never resurrect a project deleted meanwhile.
+		if (snap.id === this.projectId || this.projects.some((p) => p.id === snap.id)) {
+			const summary = { id: snap.id, name: snap.name, format: snap.format, updatedAt: snap.updatedAt };
+			this.projects = [summary, ...this.projects.filter((p) => p.id !== snap.id)];
 		}
 	}
 
@@ -159,10 +172,13 @@ class Workspace {
 	}
 
 	async deleteCurrentProject() {
-		if (!this.projectId) return;
+		const id = this.projectId;
+		if (!id) return;
 		clearTimeout(this.#saveTimer);
-		await deleteProject(this.projectId).catch(() => {});
+		// detach first, so a save still in flight cannot put it back in the list
 		this.projectId = null;
+		this.projects = this.projects.filter((p) => p.id !== id);
+		await deleteProject(id).catch(() => {});
 		await this.refreshProjects();
 		const next = this.projects[0];
 		if (next) await this.openProject(next.id);
