@@ -43,6 +43,10 @@ never parses DBML/SQL/Prisma, it consumes this. Machine-readable schema:
 - **Extras beyond the minimal contract** (all optional, omitted when empty):
   column `autoincrement`/`default`/`note`, node `indexes[]`, top-level `enums[]`.
   They keep the IR lossless through ERD-JSON; a canvas may ignore them.
+- **`default`** is SQL expression text, the same in every format: string
+  literals keep their single quotes (`"'user'"`, inner quotes doubled), numbers,
+  booleans and `NULL` are bare (`"0"`, `"true"`), functions and other
+  expressions are verbatim (`"now()"`, `"'{}'::jsonb"`).
 - **`meta.sourceFormat`** is only present when carried through from a parsed
   ERD-JSON document; `emit(ir)` has no knowledge of the original format.
 - **`meta.layout`** `grid` is an addition to the original `null|elk|dagre|manual`.

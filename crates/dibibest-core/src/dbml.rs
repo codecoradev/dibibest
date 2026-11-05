@@ -379,6 +379,31 @@ fn quote_str(v: &str) -> String {
     format!("'{}'", v.replace('\'', "\\'"))
 }
 
+/// DBML default → IR SQL expression text (see `Column::default`):
+/// `` `expr` `` is kept verbatim, `'str'` becomes a SQL string literal, bare
+/// tokens (numbers, `true`, `null`) stay as they are.
+fn default_from_dbml(v: &str) -> String {
+    if let Some(expr) = v.strip_prefix('`').and_then(|x| x.strip_suffix('`')) {
+        expr.to_string()
+    } else if v.starts_with('\'') {
+        sql_string_literal(&unquote_str(v))
+    } else {
+        v.to_string()
+    }
+}
+
+/// IR default → DBML: string literals as `'…'`, bare literals bare, the rest as
+/// a backtick expression. Inverse of [`default_from_dbml`].
+fn default_to_dbml(d: &str) -> String {
+    if let Some(s) = as_sql_string(d) {
+        quote_str(&s)
+    } else if is_bare_literal(d) {
+        d.to_string()
+    } else {
+        format!("`{d}`")
+    }
+}
+
 /// Settings bracket body `[ … ]` → inner text, if `s` is exactly one.
 fn bracket_inner(s: &str) -> Option<&str> {
     s.trim().strip_prefix('[')?.strip_suffix(']')
@@ -438,8 +463,7 @@ fn parse_column_line(l: &str) -> Option<(Column, Vec<String>)> {
             "unique" => c.unique = true,
             "increment" | "autoincrement" => c.autoincrement = true,
             _ if s.starts_with("default:") => {
-                let v = s["default:".len()..].trim();
-                c.default = Some(v.trim_matches(|q| q == '\'' || q == '`').to_string());
+                c.default = Some(default_from_dbml(s["default:".len()..].trim()));
             }
             _ if s.starts_with("note:") => c.note = Some(unquote_str(&s["note:".len()..])),
             _ if s.starts_with("ref:") => refs.push(s["ref:".len()..].trim().to_string()),
@@ -633,7 +657,7 @@ fn emit_dbml(ir: &SchemaIR) -> Result<String, CoreError> {
                 settings.push("increment".into());
             }
             if let Some(d) = &c.default {
-                settings.push(format!("default: `{}`", d));
+                settings.push(format!("default: {}", default_to_dbml(d)));
             }
             if let Some(n) = &c.note {
                 settings.push(format!("note: {}", quote_str(n)));

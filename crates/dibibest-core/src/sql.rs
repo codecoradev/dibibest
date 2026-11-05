@@ -35,9 +35,34 @@ impl SqlCodec {
     /// Identifier quoting: backticks for MySQL; PG/SQLite stay bare (as before).
     fn q(&self, ident: &str) -> String {
         if self.dialect == Dialect::MySql {
-            format!("`{}`", ident.replace('`', "``"))
+            // per dotted part, so `billing.plan` stays schema `billing`, table `plan`
+            ident
+                .split('.')
+                .map(|p| format!("`{}`", p.replace('`', "``")))
+                .collect::<Vec<_>>()
+                .join(".")
         } else {
-            ident.to_string()
+            // Plain names stay bare (unchanged output); anything else — spaces,
+            // dashes, a leading digit — is double-quoted per dotted part, so the
+            // emitted DDL re-parses. Already-quoted parts are left alone.
+            ident
+                .split('.')
+                .map(|p| {
+                    let plain = p
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                        && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                        && !is_reserved(p);
+                    let quoted = p.len() >= 2 && p.starts_with('"') && p.ends_with('"');
+                    if plain || quoted {
+                        p.to_string()
+                    } else {
+                        format!("\"{}\"", p.replace('"', "\"\""))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(".")
         }
     }
 
@@ -349,8 +374,134 @@ fn part_str(p: &sqlparser::ast::ObjectNamePart) -> String {
     p.as_ident().map(ident_str).unwrap_or_else(|| p.to_string())
 }
 
+/// Words that cannot be a bare identifier in at least one emitted dialect:
+/// PostgreSQL's reserved keywords plus common MySQL/SQLite ones (`key`, `index`).
+/// Names like `user` or `order` are common table names, so they get quoted.
+const RESERVED: &[&str] = &[
+    "all",
+    "alter",
+    "analyse",
+    "analyze",
+    "and",
+    "any",
+    "array",
+    "as",
+    "asc",
+    "asymmetric",
+    "authorization",
+    "between",
+    "binary",
+    "both",
+    "by",
+    "case",
+    "cast",
+    "check",
+    "collate",
+    "collation",
+    "column",
+    "concurrently",
+    "constraint",
+    "create",
+    "cross",
+    "current_catalog",
+    "current_date",
+    "current_role",
+    "current_schema",
+    "current_time",
+    "current_timestamp",
+    "current_user",
+    "default",
+    "deferrable",
+    "delete",
+    "desc",
+    "distinct",
+    "do",
+    "drop",
+    "else",
+    "end",
+    "except",
+    "exists",
+    "false",
+    "fetch",
+    "for",
+    "foreign",
+    "freeze",
+    "from",
+    "full",
+    "grant",
+    "group",
+    "having",
+    "if",
+    "ilike",
+    "in",
+    "index",
+    "initially",
+    "inner",
+    "insert",
+    "intersect",
+    "into",
+    "is",
+    "isnull",
+    "join",
+    "key",
+    "lateral",
+    "leading",
+    "left",
+    "like",
+    "limit",
+    "localtime",
+    "localtimestamp",
+    "natural",
+    "not",
+    "notnull",
+    "null",
+    "offset",
+    "on",
+    "only",
+    "or",
+    "order",
+    "outer",
+    "overlaps",
+    "placing",
+    "primary",
+    "references",
+    "returning",
+    "right",
+    "select",
+    "session_user",
+    "set",
+    "similar",
+    "some",
+    "symmetric",
+    "system_user",
+    "table",
+    "tablesample",
+    "then",
+    "to",
+    "trailing",
+    "true",
+    "union",
+    "unique",
+    "update",
+    "user",
+    "using",
+    "values",
+    "variadic",
+    "verbose",
+    "when",
+    "where",
+    "window",
+    "with",
+];
+
+fn is_reserved(ident: &str) -> bool {
+    RESERVED.contains(&ident.to_ascii_lowercase().as_str())
+}
+
+/// Full dotted name: `billing.tenants` keeps its schema, so refs to it still
+/// match the table after a round-trip.
 fn object_name_to_string(o: &ObjectName) -> String {
-    o.0.last().map(part_str).unwrap_or_else(|| o.to_string())
+    o.0.iter().map(part_str).collect::<Vec<_>>().join(".")
 }
 
 fn index_col_str(ic: &sqlparser::ast::IndexColumn) -> String {

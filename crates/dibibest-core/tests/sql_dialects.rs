@@ -164,3 +164,27 @@ fn fk_without_referenced_columns_never_emits_empty_parens() {
     assert!(!out.contains("()") && !out.contains("FOREIGN KEY"), "{out}");
     assert!(reg.parse(&out, &id("sql")).unwrap().refs.is_empty());
 }
+
+#[test]
+fn mysql_quotes_schema_qualified_names_per_part() {
+    let src = "Table billing.plans {\n  id int [pk]\n}\nTable billing.subs {\n  id int [pk]\n  \
+               plan_id int [ref: > billing.plans.id]\n}\n";
+    let conv = dibibest_core::Registry::with_defaults()
+        .convert_explicit(
+            src,
+            &dibibest_core::FormatId::new("dbml"),
+            &dibibest_core::FormatId::new("sql:mysql"),
+        )
+        .unwrap();
+    assert!(
+        conv.output.contains("CREATE TABLE `billing`.`plans` ("),
+        "{}",
+        conv.output
+    );
+    assert!(
+        conv.output.contains("REFERENCES `billing`.`plans`(`id`)"),
+        "{}",
+        conv.output
+    );
+    assert_eq!((conv.fidelity.refs.kept, conv.fidelity.refs.total), (1, 1));
+}

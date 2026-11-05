@@ -56,7 +56,7 @@
         "isUnique": { "type": "boolean" },
         "isNullable": { "type": "boolean" },
         "autoincrement": { "const": true },
-        "default": { "type": "string" },
+        "default": { "type": "string", "description": "SQL expression text: string literals keep single quotes" },
         "note": { "type": "string" }
       }
     },

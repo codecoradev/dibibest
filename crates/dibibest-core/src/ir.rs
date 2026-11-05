@@ -48,6 +48,10 @@ pub struct Column {
     pub unique: bool,
     #[serde(default)]
     pub autoincrement: bool,
+    /// Default as SQL expression text: string literals keep their single quotes
+    /// (`'free'`, inner quotes doubled), numbers / booleans / `NULL` are bare, and
+    /// functions or other expressions are verbatim (`now()`, `'{}'::jsonb`). Use
+    /// [`sql_string_literal`] / [`as_sql_string`] to convert string literals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -130,4 +134,31 @@ impl SchemaIR {
     pub fn table(&self, name: &str) -> Option<&Table> {
         self.tables.iter().find(|t| t.name == name)
     }
+}
+
+/// A SQL string literal for `s`: single-quoted, inner `'` doubled.
+pub fn sql_string_literal(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// If `d` is exactly one SQL string literal (`'it''s'`), its unescaped content.
+/// Expressions that merely contain literals (`'{}'::jsonb`) return `None`.
+pub fn as_sql_string(d: &str) -> Option<String> {
+    let inner = d.strip_prefix('\'')?.strip_suffix('\'')?;
+    // every quote inside must be part of a doubled `''` pair
+    let mut out = String::new();
+    let mut chars = inner.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\'' && chars.next() != Some('\'') {
+            return None;
+        }
+        out.push(c);
+    }
+    Some(out)
+}
+
+/// A default that every format writes bare: a number, `true`/`false` or `null`.
+pub fn is_bare_literal(d: &str) -> bool {
+    let l = d.to_ascii_lowercase();
+    l == "true" || l == "false" || l == "null" || d.parse::<f64>().is_ok()
 }

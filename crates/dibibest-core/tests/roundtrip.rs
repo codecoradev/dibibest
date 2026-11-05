@@ -316,3 +316,109 @@ fn sql_on_delete_reaches_dbml() {
         conv.output
     );
 }
+
+/// Default literal kinds and non-plain identifiers survive DBML → SQL and
+/// back. Regression for #45.
+const DEFAULTS_DBML: &str = r#"
+Table "order items" {
+  "line no" int [pk]
+  plan varchar [not null, default: 'free']
+  label varchar [default: 'a, b, c']
+  quote varchar [default: 'it\'s']
+  qty int [default: 0]
+  active boolean [default: true]
+  meta jsonb [default: `'{}'::jsonb`]
+  created_at timestamptz [default: `now()`]
+}
+"#;
+
+#[test]
+fn defaults_and_identifiers_emit_valid_sql() {
+    let reg = Registry::with_defaults();
+    let sql = reg
+        .convert_explicit(DEFAULTS_DBML, &FormatId::new("dbml"), &FormatId::new("sql"))
+        .unwrap()
+        .output;
+    for want in [
+        "CREATE TABLE \"order items\" (",
+        "\"line no\" int PRIMARY KEY",
+        "DEFAULT 'free'",
+        "DEFAULT 'a, b, c'",
+        "DEFAULT 'it''s'",
+        "DEFAULT 0",
+        "DEFAULT true",
+        "DEFAULT '{}'::jsonb",
+        "DEFAULT now()",
+    ] {
+        assert!(sql.contains(want), "missing `{want}` in:\n{sql}");
+    }
+    let back = reg
+        .convert_explicit(&sql, &FormatId::new("sql"), &FormatId::new("dbml"))
+        .unwrap()
+        .output;
+    for want in [
+        "default: 'free'",
+        "default: 'a, b, c'",
+        "default: 'it\\'s'",
+        "default: 0",
+        "default: true",
+        "default: `'{}'::JSONB`", // sqlparser upper-cases cast types
+        "default: `now()`",
+    ] {
+        assert!(back.contains(want), "missing `{want}` in:\n{back}");
+    }
+}
+
+#[test]
+fn string_and_enum_defaults_reach_prisma() {
+    let src = "Enum role {\n  user\n  admin\n}\nTable users {\n  id int [pk]\n  \
+               plan varchar [default: 'free']\n  role role [default: 'user']\n}\n";
+    let reg = Registry::with_defaults();
+    let prisma = reg
+        .convert_explicit(src, &FormatId::new("dbml"), &FormatId::new("prisma"))
+        .unwrap();
+    assert!(
+        prisma.output.contains("@default(\"free\")"),
+        "{}",
+        prisma.output
+    );
+    assert!(
+        prisma.output.contains("@default(user)"),
+        "{}",
+        prisma.output
+    );
+    let ir = reg.parse(&prisma.output, &FormatId::new("prisma")).unwrap();
+    let col = |n: &str| {
+        ir.tables[0]
+            .columns
+            .iter()
+            .find(|c| c.name == n)
+            .and_then(|c| c.default.clone())
+    };
+    assert_eq!(col("plan").as_deref(), Some("'free'"));
+    assert_eq!(col("role").as_deref(), Some("'user'"));
+}
+
+#[test]
+fn reserved_word_identifiers_are_quoted() {
+    let src = "Table user {\n  id int [pk]\n}\nTable order {\n  id int [pk]\n  \
+               user_id int [ref: > user.id]\n  \"group\" varchar\n}\n";
+    let conv = Registry::with_defaults()
+        .convert_explicit(src, &FormatId::new("dbml"), &FormatId::new("sql"))
+        .unwrap();
+    for want in [
+        "CREATE TABLE \"user\" (",
+        "CREATE TABLE \"order\" (",
+        "\"group\" varchar",
+        "REFERENCES \"user\"(id)",
+    ] {
+        assert!(
+            conv.output.contains(want),
+            "missing `{want}` in:\n{}",
+            conv.output
+        );
+    }
+    // plain names stay bare
+    assert!(conv.output.contains("  user_id int,"), "{}", conv.output);
+    assert_eq!((conv.fidelity.refs.kept, conv.fidelity.refs.total), (1, 1));
+}

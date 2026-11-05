@@ -63,7 +63,7 @@
           "isFk": false,
           "isUnique": false,
           "isNullable": true,
-          "default": "user"
+          "default": "'user'"
         }
       ]
     }
