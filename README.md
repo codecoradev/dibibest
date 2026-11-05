@@ -8,6 +8,8 @@ dbdiagram memberimu design-first; Liam ERD memberimu reverse-first. **dibibest
 memberimu keduanya dalam satu IR**, dan mengukur sendiri apakah bolak-baliknya
 lossless.
 
+![dibibest workspace: DBML editor on the left, live ERD on the right, round-trip fidelity chip in the header](docs/screenshots/workspace-text-first.png)
+
 > **Status: beta.** Format inti sudah jalan dan diuji round-trip di CI, tapi masih
 > ada keterbatasan yang diketahui (lihat [di bawah](#keterbatasan-beta)). Kalau
 > konversimu salah atau laporan fidelity-nya bohong, itu bug:
@@ -124,6 +126,10 @@ cd apps/web && bun install && bun run dev
 
 Tiga layout (text-first, canvas-first, explorer) di atas satu ERD-JSON; konversi
 jalan lewat core yang sama, dikompilasi ke WASM. Tidak ada upload.
+
+| Laporan fidelity (klik chip "round-trip") | Explorer: cari & sembunyikan tabel di skema besar |
+|---|---|
+| ![Fidelity report panel: kept/total for tables, columns, refs, indexes and round-trip idempotency](docs/screenshots/fidelity-panel.png) | ![Explorer layout: table list with search and visibility toggles next to the ERD canvas](docs/screenshots/explorer.png) |
 
 Simpan proyek (opsional, OFF secara default) memakai `crates/dibibest-api` dengan
 login OIDC. Lihat [docs/auth.md](docs/auth.md).
