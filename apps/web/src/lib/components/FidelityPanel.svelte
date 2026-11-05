@@ -43,8 +43,9 @@
 <style>
 	.panel {
 		position: absolute;
-		top: 52px;
+		top: calc(100% + 4px);
 		right: var(--sp-4);
+		max-width: calc(100vw - 24px);
 		z-index: 20;
 		width: 320px;
 		background: var(--bg-2);

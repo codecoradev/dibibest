@@ -54,3 +54,10 @@ input:focus-visible {
 	outline-offset: 2px;
 	border-radius: var(--r-sm);
 }
+
+/* Phones: 16px text in the editor stops iOS from zooming in on focus. */
+@media (max-width: 760px) {
+	.cm-editor.cm-editor {
+		font-size: 16px;
+	}
+}

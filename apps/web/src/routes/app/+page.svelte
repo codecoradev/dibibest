@@ -14,7 +14,33 @@
 		explorer: 'explorer layout · search, hide and focus tables in large schemas'
 	};
 
+	// Phones get one pane at a time with a bottom tab bar (same state, same core).
+	const PANES: Record<Layout, [string, string]> = {
+		text: ['Editor', 'Diagram'],
+		canvas: ['Diagram', 'Schema'],
+		explorer: ['Tables', 'Diagram']
+	};
+	let mobile = $state(false);
+	/** Which of the layout's two panes a phone shows: 0 = first, 1 = second. */
+	let pane = $state<0 | 1>(0);
+	// a new layout opens on its primary pane (the editor for text-first, the diagram otherwise)
+	let lastLayout: Layout | undefined;
+	$effect(() => {
+		if (ws.layout !== lastLayout) {
+			lastLayout = ws.layout;
+			pane = 0;
+		}
+	});
+	// explorer: picking a table on a phone jumps to the diagram, focused on it
+	$effect(() => {
+		if (mobile && ws.layout === 'explorer' && ws.focus) pane = 1;
+	});
+
 	onMount(() => {
+		const mq = window.matchMedia('(max-width: 760px)');
+		mobile = mq.matches;
+		const onMq = (e: MediaQueryListEvent) => (mobile = e.matches);
+		mq.addEventListener('change', onMq);
 		ws.boot();
 		auth.load();
 		// best effort: flush a pending autosave when the tab is hidden or closed
@@ -32,6 +58,7 @@
 		};
 		window.addEventListener('keydown', onKey);
 		return () => {
+			mq.removeEventListener('change', onMq);
 			window.removeEventListener('keydown', onKey);
 			document.removeEventListener('visibilitychange', flush);
 			window.removeEventListener('pagehide', flush);
@@ -43,26 +70,35 @@
 
 <div class="app">
 	<Header />
-	<div class="main">
+	<div class="main" class:mobile>
 		{#if ws.layout === 'text'}
-			<TextPane editable />
-			<Canvas mode="preview" />
+			{#if !mobile || pane === 0}<TextPane editable />{/if}
+			{#if !mobile || pane === 1}<Canvas mode="preview" />{/if}
 		{:else if ws.layout === 'canvas'}
-			<Canvas mode="edit" />
-			<TextPane editable={false} />
+			{#if !mobile || pane === 0}<Canvas mode="edit" />{/if}
+			{#if !mobile || pane === 1}<TextPane editable={false} />{/if}
 		{:else}
-			<Sidebar />
-			<Canvas mode="explorer" />
+			{#if !mobile || pane === 0}<Sidebar />{/if}
+			{#if !mobile || pane === 1}<Canvas mode="explorer" />{/if}
 		{/if}
 	</div>
-	<footer class="statusbar">
-		<span>{STATUS[ws.layout]}</span><span class="sep">·</span><span>⌘/ switch layout</span>
-	</footer>
+	{#if mobile}
+		<div class="panes" role="tablist" aria-label="Pane">
+			{#each PANES[ws.layout] as label, i (label)}
+				<button role="tab" aria-selected={pane === i} onclick={() => (pane = i as 0 | 1)}>{label}</button>
+			{/each}
+		</div>
+	{:else}
+		<footer class="statusbar">
+			<span>{STATUS[ws.layout]}</span><span class="sep">·</span><span>⌘/ switch layout</span>
+		</footer>
+	{/if}
 </div>
 
 <style>
 	.app {
 		height: 100vh;
+		height: 100dvh;
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
@@ -86,5 +122,30 @@
 	}
 	.sep {
 		color: var(--line);
+	}
+	/* one pane fills the screen on phones */
+	.main.mobile > :global(*) {
+		width: 100% !important;
+		flex: 1 1 auto !important;
+		border: none !important;
+	}
+	.panes {
+		flex: 0 0 auto;
+		display: flex;
+		gap: var(--sp-2);
+		padding: var(--sp-2) var(--sp-3) calc(var(--sp-2) + env(safe-area-inset-bottom));
+		background: var(--bg-1);
+		border-top: 1px solid var(--line);
+	}
+	.panes button {
+		flex: 1;
+		padding: 10px;
+		border-radius: var(--r-md);
+		color: var(--text-2);
+		font-weight: 600;
+	}
+	.panes button[aria-selected='true'] {
+		background: var(--accent-strong);
+		color: #fff;
 	}
 </style>

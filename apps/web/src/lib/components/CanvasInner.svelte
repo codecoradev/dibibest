@@ -120,7 +120,7 @@
 		</Panel>
 		{#if mode === 'explorer'}
 			<Panel position="top-right">
-				<div class="toolbar" role="toolbar" aria-label="Layout">
+				<div class="toolbar layout-tools" role="toolbar" aria-label="Layout">
 					<button class="on">Grid</button>
 					<button disabled title="ELK layouts arrive in R4">Layered</button>
 					<button disabled title="ELK layouts arrive in R4">Ortho</button>
@@ -241,5 +241,20 @@
 	.hud .grp.warn {
 		color: var(--warn);
 		border-color: rgba(245, 181, 68, 0.3);
+	}
+	/* Phones: keep the canvas clear; the tools stay, the hints and minimap go. */
+	@media (max-width: 760px) {
+		.hint,
+		.hud .grp:not(.ok):not(.warn),
+		.layout-tools,
+		.canvas :global(.svelte-flow__minimap) {
+			display: none;
+		}
+		.toolbar button {
+			padding: 9px 12px;
+		}
+		.focusbar {
+			max-width: calc(100vw - 24px);
+		}
 	}
 </style>

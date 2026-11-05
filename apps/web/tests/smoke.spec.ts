@@ -147,3 +147,35 @@ test('a signed-in user can download, and sees Sign out', async ({ page }) => {
 	]);
 	expect(file.suggestedFilename()).toBe('shop-demo.dbml');
 });
+
+test.describe('phone', () => {
+	test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+	test('one pane at a time, switched from the bottom bar, without sideways scroll', async ({ page }) => {
+		await page.goto('/app');
+		const editor = page.getByRole('textbox', { name: 'dbml source' });
+		const nodes = page.locator('.svelte-flow__node-table');
+		const panes = page.getByRole('tablist', { name: 'Pane' });
+		const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+
+		// text-first opens on the editor; the diagram is one tap away and reflects the edit
+		await expect(editor).toBeVisible();
+		await expect(nodes).toHaveCount(0);
+		await editor.click();
+		await page.keyboard.press('ControlOrMeta+End');
+		await page.keyboard.type('\nTable tags {\n  id integer [pk]\n}\n');
+		expect(await overflow()).toBeLessThanOrEqual(0);
+		await panes.getByRole('tab', { name: 'Diagram' }).click();
+		await expect(nodes).toHaveCount(3);
+		await expect(editor).toHaveCount(0);
+		expect(await overflow()).toBeLessThanOrEqual(0);
+
+		// explorer: picking a table jumps to the diagram, focused on it
+		await page.getByRole('tab', { name: 'Explorer' }).click();
+		await expect(panes.getByRole('tab', { name: 'Tables' })).toHaveAttribute('aria-selected', 'true');
+		await page.getByLabel('Schema explorer').getByRole('button', { name: 'users' }).click();
+		await expect(panes.getByRole('tab', { name: 'Diagram' })).toHaveAttribute('aria-selected', 'true');
+		await expect(page.getByText('Focus:')).toBeVisible();
+		expect(await overflow()).toBeLessThanOrEqual(0);
+	});
+});
