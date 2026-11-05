@@ -2,6 +2,7 @@
 // is no second model. Text and canvas edits both end in `analyze`, so what you see
 // is always what the core parsed.
 import { convert, toErd, type ErdDoc, type ErdNode, type Fidelity } from './core';
+import { diagramSvg, svgToPng, type Theme } from './diagram';
 import {
 	deleteProject,
 	download,
@@ -223,6 +224,29 @@ class Workspace {
 		}
 		download(`${fileBase(this.projectName)}.${extensionFor(format)}`, text);
 		return null;
+	}
+
+	/**
+	 * Download the diagram as an image (#60), drawn from the workspace state so
+	 * it works even when the canvas is not on screen. Explorer-hidden tables are
+	 * left out.
+	 */
+	async exportImage(kind: 'svg' | 'png', theme: Theme = 'dark'): Promise<string | null> {
+		if (!this.erd) return 'nothing to export yet';
+		const hidden = this.layout === 'explorer' ? this.hidden : undefined;
+		const d = diagramSvg(this.erd, { theme, hidden });
+		if (!d) return 'no tables to draw';
+		const base = `${fileBase(this.projectName)}${theme === 'light' ? '-light' : ''}`;
+		if (kind === 'svg') {
+			download(`${base}.svg`, new Blob([d.svg], { type: 'image/svg+xml;charset=utf-8' }));
+			return null;
+		}
+		try {
+			download(`${base}.png`, await svgToPng(d));
+			return null;
+		} catch (e) {
+			return e instanceof Error ? e.message : 'could not render the image';
+		}
 	}
 
 	/** Text-pane edit: debounced re-parse. */
