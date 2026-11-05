@@ -206,3 +206,27 @@ test('an unreachable identity provider gives a clear 503, not a crash', async ()
 	expect(res.status).toBe(503);
 	expect(await res.text()).toContain('cannot be reached');
 });
+
+test('a non-JSON answer from the token or userinfo endpoint fails cleanly', async () => {
+	for (const broken of ['token', 'userinfo'] as const) {
+		const { fetcher: good } = fakeIdp();
+		const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			if (String(input).endsWith(broken === 'token' ? '/oauth2/token' : '/oauth2/userinfo')) {
+				return new Response('<html>proxy error</html>', { status: 200, headers: { 'content-type': 'text/html' } });
+			}
+			return good(input, init);
+		}) as typeof fetch;
+		const login = await handleLogin(new Request(`${APP}/auth/login`), ENV, fetcher);
+		const handshake = cookieValue(login.headers.get('set-cookie'), LOGIN_COOKIE)!;
+		const state = new URL(login.headers.get('location')!).searchParams.get('state')!;
+		const res = await handleCallback(
+			new Request(`${APP}/auth/callback?code=c&state=${state}`, { headers: { cookie: `${LOGIN_COOKIE}=${handshake}` } }),
+			ENV,
+			fetcher
+		);
+		expect(res.status).toBe(502);
+		expect(res.headers.get('content-type')).toContain('text/html');
+		expect(res.headers.get('set-cookie')).toContain(`${LOGIN_COOKIE}=;`);
+		expect(res.headers.get('set-cookie')).not.toContain(`${SESSION_COOKIE}=`);
+	}
+});

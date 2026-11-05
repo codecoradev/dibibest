@@ -34,6 +34,15 @@ async function tryDiscover(issuer: string, fetcher: Fetch): Promise<Discovery | 
 	}
 }
 
+/** JSON body, or null for a non-JSON answer (e.g. a proxy error page with 200). */
+async function readJson<T>(res: Response): Promise<T | null> {
+	try {
+		return (await res.json()) as T;
+	} catch {
+		return null;
+	}
+}
+
 const UNREACHABLE = 'CodeCora ID cannot be reached right now. The workspace still works without signing in; try again in a moment.';
 
 /** GET /auth/me → {enabled, user}. The web app reads this to gate import/export. */
@@ -123,7 +132,7 @@ export async function handleCallback(req: Request, env: Env, fetcher: Fetch = fe
 	const tok = await fetcher(d.token_endpoint, { method: 'POST', headers, body: form }).catch(() => null);
 	if (!tok) return page(503, 'Sign-in unavailable', UNREACHABLE, clearLogin);
 	if (!tok.ok) return page(502, 'Sign-in failed', `Token exchange failed (${tok.status}).`, clearLogin);
-	const { access_token } = (await tok.json()) as { access_token?: string };
+	const access_token = (await readJson<{ access_token?: string }>(tok))?.access_token;
 	if (!access_token) return page(502, 'Sign-in failed', 'No access token was returned.', clearLogin);
 
 	const ui = await fetcher(d.userinfo_endpoint, { headers: { authorization: `Bearer ${access_token}` } }).catch(
@@ -131,7 +140,8 @@ export async function handleCallback(req: Request, env: Env, fetcher: Fetch = fe
 	);
 	if (!ui) return page(503, 'Sign-in unavailable', UNREACHABLE, clearLogin);
 	if (!ui.ok) return page(502, 'Sign-in failed', `Could not read your profile (${ui.status}).`, clearLogin);
-	const info = (await ui.json()) as { sub?: string; email?: string; email_verified?: boolean; name?: string };
+	const info =
+		(await readJson<{ sub?: string; email?: string; email_verified?: boolean; name?: string }>(ui)) ?? {};
 	if (!info.sub || !info.email) return page(502, 'Sign-in failed', 'Your profile has no email address.', clearLogin);
 	if (info.email_verified === false) {
 		return page(403, 'Email not verified', 'Verify your email with CodeCora ID, then sign in again.', clearLogin);
