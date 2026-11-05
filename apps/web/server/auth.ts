@@ -131,10 +131,25 @@ export function cookie(req: Request, name: string, value: string, maxAge: number
 
 // ── flow helpers ────────────────────────────────────────────────────────────
 
-/** Only same-site relative paths: never `//host` or `https://…` (open redirect). */
+/**
+ * Only same-site relative paths (open-redirect guard). Rejects control
+ * characters and backslashes outright, because browsers strip tabs/newlines and
+ * treat `\\` as `/` when parsing a Location (`/\t/evil` → `//evil`), then
+ * resolves the path against a placeholder origin and requires it to stay there.
+ */
 export function safeReturnTo(v: string | null): string {
-	if (!v || !v.startsWith('/') || v.startsWith('//') || v.startsWith('/\\')) return '/app';
-	return v;
+	const fallback = '/app';
+	// eslint-disable-next-line no-control-regex
+	if (!v || /[\u0000-\u001f\u007f\\]/.test(v)) return fallback;
+	if (!v.startsWith('/') || v.startsWith('//')) return fallback;
+	const base = 'https://return-to.invalid';
+	try {
+		const u = new URL(v, base);
+		if (u.origin !== base) return fallback;
+		return `${u.pathname}${u.search}${u.hash}`;
+	} catch {
+		return fallback;
+	}
 }
 
 /** CSRF guard for state-changing requests: same origin, or same-site fetch metadata. */

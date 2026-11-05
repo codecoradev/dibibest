@@ -90,6 +90,15 @@ test('return_to only accepts same-site paths', () => {
 	expect(safeReturnTo('https://evil.test')).toBe('/app');
 	expect(safeReturnTo('/\\evil.test')).toBe('/app');
 	expect(safeReturnTo(null)).toBe('/app');
+	// browsers strip tab/CR/LF and read `\\` as `/` in a Location: all must fall back
+	for (const v of ['/\t/evil.test', '/\n/evil.test', '/\r/evil.test', '/\\/evil.test', '/x\\..\\..//evil.test', '/\u0000/evil']) {
+		expect(safeReturnTo(v)).toBe('/app');
+	}
+	// what /auth/login receives for ?return_to=/%09/evil.test
+	expect(safeReturnTo(new URLSearchParams('return_to=/%09/evil.test').get('return_to'))).toBe('/app');
+	// ordinary paths survive, normalized
+	expect(safeReturnTo('/app?x=1#y')).toBe('/app?x=1#y');
+	expect(safeReturnTo('/a/../app')).toBe('/app');
 });
 
 describe('login → callback → me', () => {
