@@ -110,6 +110,13 @@ cargo install --git https://github.com/codecoradev/dibibest dibibest-mcp
 { "mcpServers": { "dibibest": { "command": "dibibest-mcp" } } }
 ```
 
+Atau pakai server remote (tanpa install, login CodeCora ID lewat OAuth, tanpa
+API key) setelah versi hosted aktif:
+
+```json
+{ "mcpServers": { "dibibest": { "url": "https://dibibest.codecora.dev/mcp" } } }
+```
+
 Tools:
 
 - `convert_schema` (`source`, `from?`, `to`) → output + fidelity

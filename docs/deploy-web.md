@@ -15,8 +15,10 @@ Background and decisions: epic #52.
 | `GET /auth/login?return_to=/app` | Redirect to CodeCora ID (Gatehouse), PKCE S256 + state |
 | `GET /auth/callback` | Code exchange (confidential client), userinfo, session cookie |
 | `POST /auth/logout` | Clears the session (same-origin only) |
+| `POST /mcp` | Remote MCP server (Streamable HTTP), OAuth required; see below |
+| `GET /.well-known/oauth-protected-resource[/mcp]` | RFC 9728 metadata pointing MCP clients at Gatehouse |
 
-The route files are in `apps/web/functions/auth/`; the logic and its unit
+The route files are in `apps/web/functions/`; the logic and its unit
 tests are in `apps/web/server/` (`bun run test:server`).
 
 **Sign-in gates only import and download.** Editing, converting, copying and
@@ -64,6 +66,49 @@ The token endpoint is called with `client_secret_basic`. If Gatehouse is
 configured for `client_secret_post` instead, set `OIDC_TOKEN_AUTH = "post"` in
 `[vars]`.
 
+## Remote MCP (`/mcp`)
+
+The same tools as the local stdio server (`convert_schema`, `list_formats`),
+running the core compiled to WASM inside a Pages Function. Client config:
+
+```json
+{ "mcpServers": { "dibibest": { "url": "https://dibibest.codecora.dev/mcp" } } }
+```
+
+- **OAuth only, no API keys.** A request without a valid token gets `401` with
+  `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp"`.
+  The metadata names Gatehouse as the authorization server; the client signs
+  the user in there (PKCE, Client ID Metadata Document for registration) and
+  asks for `resource=https://dibibest.codecora.dev/mcp` (RFC 8707).
+- **Tokens are verified locally:** an RFC 9068 JWT signed by a key in
+  Gatehouse's JWKS (RS256/PS256/ES256, cached for an hour, refetched on an
+  unknown `kid`), with `iss` = the issuer, `aud` containing this origin's
+  `/mcp` URL, valid `exp`/`nbf`, a `sub`, and no `cnf` (DPoP-bound tokens are
+  refused because the proof is not checked). Opaque tokens are refused.
+- **Transport:** stateless, JSON responses only (no SSE stream, no
+  `Mcp-Session-Id`); `GET` answers 405. Protocol versions 2025-11-25,
+  2025-06-18 and 2025-03-26. Requests from a foreign browser `Origin` are
+  refused. Bodies over 512 KB get 413.
+- **Enabled** whenever `OIDC_ISSUER` is set (no client secret is needed: this
+  is a resource server). It answers 401 to everyone until Gatehouse issues
+  tokens for the resource (owner step below).
+
+### Gatehouse setup for MCP (owner)
+
+Gatehouse issues a JWT access token only for a registered resource, and only
+to clients linked to it:
+
+1. add the resource `https://dibibest.codecora.dev/mcp` (and
+   `https://dibibest.pages.dev/mcp` if that hostname is used) to the
+   `oauthProvider` `resources`;
+2. link MCP clients to it. They register by CIMD, so set
+   `clientRegistrationDefaultResources` to include the resource rather than
+   turning off `enforcePerClientResources` (which would let any registered
+   client get tokens for every API);
+3. optionally add the authorization server metadata at the root
+   (`/.well-known/oauth-authorization-server/api/auth`) for clients that try
+   RFC 8414 before OpenID discovery.
+
 ## Limits and cost (Cloudflare, checked 2026-11-05)
 
 - Static files (the whole workspace and conversions) are free and unlimited.
@@ -72,6 +117,10 @@ configured for `client_secret_post` instead, set `OIDC_TOKEN_AUTH = "post"` in
   10 million requests and 30 million CPU-ms per month, then metered. There is
   no flat unlimited plan below Enterprise.
 - Sign-in uses a handful of function requests per login.
+- Each MCP request is one function request. Token checks use Web Crypto and
+  the core runs as a precompiled WASM module, so a typical conversion stays
+  within the Free plan's 10 ms CPU; very large schemas may not, in which case
+  Workers Paid (30 s CPU) is the fix.
 
 ## Local check
 

@@ -164,7 +164,12 @@ export function redirectUri(req: Request): string {
 	return new URL('/auth/callback', req.url).toString();
 }
 
-export type Discovery = { authorization_endpoint: string; token_endpoint: string; userinfo_endpoint: string };
+export type Discovery = {
+	authorization_endpoint: string;
+	token_endpoint: string;
+	userinfo_endpoint: string;
+	jwks_uri?: string;
+};
 
 let discoveryCache: { issuer: string; doc: Discovery; at: number } | undefined;
 
