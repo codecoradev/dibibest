@@ -55,7 +55,9 @@ export type ErdDoc = {
 /** Data payload of a canvas table node. */
 export type TableData = { node: ErdNode; tone: 'normal' | 'related' | 'dimmed'; editable: boolean };
 
-export type Result = { ok: true; output: string; fidelity: Fidelity; ms: number } | { ok: false; error: string };
+export type Result =
+	| { ok: true; output: string; fidelity: Fidelity; ms: number; from?: string }
+	| { ok: false; error: string };
 
 type Exports = {
 	memory: WebAssembly.Memory;
@@ -90,7 +92,7 @@ async function call(req: object): Promise<Result> {
 	return res.ok ? { ...res, ms: performance.now() - t0 } : res;
 }
 
-/** source text → ERD-JSON (grid-laid-out) + fidelity of the conversion. */
+/** source text → ERD-JSON (grid-laid-out) + fidelity. `from: 'auto'` detects the format (echoed in `from`). */
 export const toErd = (src: string, from: string) => call({ op: 'erd', src, from });
 /** source text → another format + fidelity. */
 export const convert = (src: string, from: string, to: string) => call({ op: 'convert', src, from, to });

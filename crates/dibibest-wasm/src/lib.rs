@@ -2,11 +2,13 @@
 //! (`alloc`, `dealloc`, `run`) keeps the build to plain `cargo` and the JS side
 //! to ~30 lines. All logic lives in [`handle`], which is plain Rust and tested natively.
 //!
-//! Request (JSON): `{"op":"erd"|"convert","src":..,"from":..,"to":..}`.
-//! Response (JSON): `{"ok":true,"output":..,"fidelity":{..}}` or `{"ok":false,"error":..}`.
+//! Request (JSON): `{"op":"erd"|"convert","src":..,"from":..,"to":..}`; `from` may
+//! be `"auto"` to use the core's format detection (file import).
+//! Response (JSON): `{"ok":true,"output":..,"fidelity":{..},"from":..}` or
+//! `{"ok":false,"error":..}`. `from` echoes the format actually used.
 
 use dibibest_core::erdjson::{apply_layout, LayoutStrategy};
-use dibibest_core::{default_registry, FormatId};
+use dibibest_core::{default_registry, detect_format, FormatId};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -34,7 +36,14 @@ pub fn handle(req: &str) -> String {
 
 fn run_req(r: Req) -> Result<Value, String> {
     let reg = default_registry();
-    let from = FormatId::new(r.from);
+    let from_id = if r.from == "auto" {
+        detect_format(&r.src)
+            .ok_or("could not detect the format; expected DBML, SQL, Prisma or ERD-JSON")?
+            .to_string()
+    } else {
+        r.from
+    };
+    let from = FormatId::new(from_id.clone());
     let to = match r.op.as_str() {
         "erd" => FormatId::new("erdjson"),
         "convert" => FormatId::new(r.to.ok_or("convert needs `to`")?),
@@ -50,7 +59,7 @@ fn run_req(r: Req) -> Result<Value, String> {
     } else {
         conv.output
     };
-    Ok(json!({"ok": true, "output": output, "fidelity": conv.fidelity}))
+    Ok(json!({"ok": true, "output": output, "fidelity": conv.fidelity, "from": from_id}))
 }
 
 #[no_mangle]
@@ -113,5 +122,19 @@ mod tests {
         );
         assert_eq!(call(json!({"op":"x","from":"dbml","src":""}))["ok"], false);
         assert!(handle("nope").contains("bad request"));
+    }
+
+    #[test]
+    fn auto_detects_the_source_format() {
+        let r =
+            call(json!({"op":"erd","from":"auto","src":"CREATE TABLE a (id int PRIMARY KEY);"}));
+        assert_eq!(r["ok"], true);
+        assert_eq!(r["from"], "sql");
+        let r = call(json!({"op":"erd","from":"auto","src":"Table a {\n  id int [pk]\n}\n"}));
+        assert_eq!(r["from"], "dbml");
+        assert_eq!(
+            call(json!({"op":"erd","from":"auto","src":"hello"}))["ok"],
+            false
+        );
     }
 }
