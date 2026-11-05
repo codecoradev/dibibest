@@ -1,7 +1,7 @@
 //! base64url, HMAC-signed cookie payloads, PKCE and random tokens.
 
-use hmac::{Hmac, Mac};
-use rand::RngCore;
+use hmac::{Hmac, KeyInit, Mac};
+use rand::{rngs::SysRng, TryRng};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -79,10 +79,11 @@ pub fn verify(key: &[u8; 32], token: &str) -> Option<Value> {
     (v.get("exp")?.as_u64()? > now()).then_some(v)
 }
 
-/// `n` random bytes, base64url.
+/// `n` random bytes from the OS RNG, base64url. Used for OIDC state and PKCE
+/// verifiers, so it deliberately avoids `ThreadRng` (no reseed on fork).
 pub fn random_token(n: usize) -> String {
     let mut b = vec![0u8; n];
-    rand::rngs::OsRng.fill_bytes(&mut b);
+    SysRng.try_fill_bytes(&mut b).expect("OS RNG unavailable");
     b64url(&b)
 }
 
