@@ -5,10 +5,10 @@
 	import { auth } from '../auth.svelte';
 	import FidelityPanel from './FidelityPanel.svelte';
 
-	const LAYOUTS: { id: Layout; label: string }[] = [
-		{ id: 'text', label: '▤ Text-first' },
-		{ id: 'canvas', label: '▦ Canvas-first' },
-		{ id: 'explorer', label: '☰ Explorer' }
+	const LAYOUTS: { id: Layout; label: string; short: string }[] = [
+		{ id: 'text', label: '▤ Text-first', short: 'Text' },
+		{ id: 'canvas', label: '▦ Canvas-first', short: 'Canvas' },
+		{ id: 'explorer', label: '☰ Explorer', short: 'Explorer' }
 	];
 	const EXPORTS = [...FORMATS, { id: 'erdjson', label: 'ERD-JSON' }];
 	const DOWNLOADS = [
@@ -94,7 +94,11 @@
 		const total = parts.reduce((a, o) => a + o.total, 0);
 		const lossless = f.idempotent && kept === total && !f.dropped?.length;
 		const pct = total ? Math.floor((kept / total) * 100) : 100;
-		return { lossless, text: lossless ? 'round-trip 100% lossless' : `round-trip ${pct}% · ${f.dropped?.length ?? 0} dropped` };
+		return {
+			lossless,
+			text: lossless ? 'round-trip 100% lossless' : `round-trip ${pct}% · ${f.dropped?.length ?? 0} dropped`,
+			short: lossless ? '100%' : `${pct}%`
+		};
 	});
 
 	async function exportAs(to: string) {
@@ -109,7 +113,7 @@
 
 <header class="topbar">
 	<div class="brand">
-		<span class="mark">db</span> dibibest
+		<span class="mark">db</span> <span class="name">dibibest</span>
 		<div class="projects">
 			<button
 				class="project-name"
@@ -148,17 +152,21 @@
 	<span class="save" class:warn={ws.saveState === 'error' || !ws.persistent} title={ws.persistent ? '' : 'Browser storage is unavailable: projects last for this session only'}>
 		{ws.persistent ? SAVE_LABEL[ws.saveState] : 'Session only'}
 	</span>
-	{#if ws.layout === 'text'}
-		<div class="seg" role="tablist" aria-label="Source format">
-			{#each FORMATS as f (f.id)}
-				<button role="tab" aria-selected={ws.format === f.id} onclick={() => ws.setFormat(f.id)}>{f.label}</button>
+	<div class="modes">
+		{#if ws.layout === 'text'}
+			<div class="seg" role="tablist" aria-label="Source format">
+				{#each FORMATS as f (f.id)}
+					<button role="tab" aria-selected={ws.format === f.id} onclick={() => ws.setFormat(f.id)}>{f.label}</button>
+				{/each}
+			</div>
+		{/if}
+		<div class="seg layout" role="tablist" aria-label="Workspace layout">
+			{#each LAYOUTS as l (l.id)}
+				<button role="tab" aria-selected={ws.layout === l.id} aria-label={l.label.slice(2)} onclick={() => (ws.layout = l.id)}
+						><span class="long">{l.label}</span><span class="short">{l.short}</span></button
+					>
 			{/each}
 		</div>
-	{/if}
-	<div class="seg layout" role="tablist" aria-label="Workspace layout">
-		{#each LAYOUTS as l (l.id)}
-			<button role="tab" aria-selected={ws.layout === l.id} onclick={() => (ws.layout = l.id)}>{l.label}</button>
-		{/each}
 	</div>
 	<div class="spacer"></div>
 	{#if chip}
@@ -166,7 +174,8 @@
 			class="chip"
 			class:lossy={!chip.lossless}
 			aria-expanded={showFidelity}
-			onclick={() => (showFidelity = !showFidelity)}>◈ {chip.text}</button
+			aria-label={chip.text}
+			onclick={() => (showFidelity = !showFidelity)}>◈ <span class="long">{chip.text}</span><span class="short">{chip.short}</span></button
 		>
 	{/if}
 	<div class="export">
@@ -308,8 +317,9 @@
 	}
 	.notice {
 		position: absolute;
-		top: 52px;
+		top: calc(100% + 4px);
 		left: 50%;
+		max-width: calc(100vw - 24px);
 		transform: translateX(-50%);
 		z-index: 40;
 		background: var(--bg-2);
@@ -346,6 +356,92 @@
 	}
 	.spacer {
 		flex: 1;
+	}
+	.modes {
+		display: contents;
+	}
+	.chip .short,
+	.seg .short {
+		display: none;
+	}
+
+	/* Phones: two rows. Brand, project, fidelity, export and account on top;
+	   format and layout switches below, scrolling sideways when they do not fit. */
+	@media (max-width: 760px) {
+		.topbar {
+			height: auto;
+			flex: 0 0 auto;
+			flex-wrap: wrap;
+			row-gap: var(--sp-2);
+			column-gap: var(--sp-2);
+			padding: var(--sp-2) var(--sp-3);
+			padding-top: calc(var(--sp-2) + env(safe-area-inset-top));
+		}
+		.brand {
+			min-width: 0;
+			flex: 0 1 auto;
+		}
+		.brand .name,
+		.save,
+		.who {
+			display: none;
+		}
+		.projects {
+			min-width: 0;
+		}
+		.project-name {
+			display: block;
+			max-width: 40vw;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+			padding: 8px 6px;
+		}
+		.chip {
+			padding: 6px 10px;
+		}
+		.chip .long,
+		.seg .long {
+			display: none;
+		}
+		.chip .short,
+		.seg .short {
+			display: inline;
+		}
+		.btn-primary {
+			padding: 8px 12px;
+		}
+		.link {
+			padding: 8px 6px;
+		}
+		.modes {
+			order: 10;
+			flex: 1 0 100%;
+			display: flex;
+			gap: var(--sp-2);
+			overflow-x: auto;
+			scrollbar-width: none;
+		}
+		.modes::-webkit-scrollbar {
+			display: none;
+		}
+		.seg {
+			flex: 0 0 auto;
+		}
+		.seg button {
+			padding: 7px 11px;
+			white-space: nowrap;
+		}
+		.menu {
+			max-width: calc(100vw - 24px);
+		}
+		.menu.left {
+			min-width: min(240px, calc(100vw - 24px));
+		}
+		.menu button {
+			padding: 11px var(--sp-3);
+			white-space: normal;
+		}
 	}
 	.chip {
 		display: inline-flex;
