@@ -9,6 +9,6 @@
 		"skipLibCheck": true,
 		"types": []
 	},
-	"include": ["./*.ts", "../functions/**/*.ts"],
+	"include": ["./*.ts", "../functions/**/*.ts", "../functions/.well-known/**/*.ts"],
 	"exclude": ["./*.test.ts"]
 }

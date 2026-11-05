@@ -4,6 +4,7 @@
 //!
 //! Request (JSON): `{"op":"erd"|"convert","src":..,"from":..,"to":..}`; `from` may
 //! be `"auto"` to use the core's format detection (file import).
+//! `{"op":"formats"}` lists the registry's format ids as `{"ok":true,"formats":[..]}`.
 //! Response (JSON): `{"ok":true,"output":..,"fidelity":{..},"from":..}` or
 //! `{"ok":false,"error":..}`. `from` echoes the format actually used.
 
@@ -15,7 +16,9 @@ use serde_json::{json, Value};
 #[derive(Deserialize)]
 struct Req {
     op: String,
+    #[serde(default)]
     src: String,
+    #[serde(default)]
     from: String,
     #[serde(default)]
     to: Option<String>,
@@ -36,6 +39,9 @@ pub fn handle(req: &str) -> String {
 
 fn run_req(r: Req) -> Result<Value, String> {
     let reg = default_registry();
+    if r.op == "formats" {
+        return Ok(json!({"ok": true, "formats": reg.ids()}));
+    }
     let from_id = if r.from == "auto" {
         detect_format(&r.src)
             .ok_or("could not detect the format; expected DBML, SQL, Prisma or ERD-JSON")?
@@ -122,6 +128,19 @@ mod tests {
         );
         assert_eq!(call(json!({"op":"x","from":"dbml","src":""}))["ok"], false);
         assert!(handle("nope").contains("bad request"));
+    }
+
+    #[test]
+    fn lists_formats() {
+        let r = call(json!({"op":"formats"}));
+        assert_eq!(r["ok"], true);
+        let ids: Vec<&str> = r["formats"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(ids.contains(&"dbml") && ids.contains(&"sql:mysql"));
     }
 
     #[test]
