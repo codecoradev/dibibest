@@ -1,0 +1,16 @@
+# Cloudflare Pages project for the web app (epic #52). Deployed by
+# .github/workflows/deploy-web.yml with `wrangler pages deploy`.
+name = "dibibest"
+pages_build_output_dir = "build"
+compatibility_date = "2026-10-01"
+
+# Public values. Sign-in stays OFF until OIDC_CLIENT_ID is set here AND the two
+# secrets below exist; until then /auth/me answers {"enabled": false} and the
+# app keeps import/export open.
+[vars]
+OIDC_ISSUER = "https://identity.azfirazka.com/api/auth"
+OIDC_CLIENT_ID = ""
+
+# Secrets (never in this file), set once per project:
+#   wrangler pages secret put OIDC_CLIENT_SECRET --project-name dibibest
+#   wrangler pages secret put SESSION_SECRET --project-name dibibest   # >= 32 chars, e.g. openssl rand -base64 32

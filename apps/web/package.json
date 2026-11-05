@@ -8,7 +8,8 @@
     "dev": "sh scripts/wasm.sh && vite dev",
     "build": "sh scripts/wasm.sh && vite build",
     "preview": "vite preview --port 4173 --strictPort",
-    "check": "sh scripts/wasm.sh && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check": "sh scripts/wasm.sh && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json",
+		"test:server": "bun test server",
     "test:smoke": "sh scripts/wasm.sh && vite build && playwright test"
   },
   "devDependencies": {

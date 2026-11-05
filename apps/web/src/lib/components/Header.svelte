@@ -2,6 +2,7 @@
 	import { FORMATS, ws, type Layout } from '../workspace.svelte';
 	import { convert } from '../core';
 	import { copy } from '../clipboard';
+	import { auth } from '../auth.svelte';
 	import FidelityPanel from './FidelityPanel.svelte';
 
 	const LAYOUTS: { id: Layout; label: string }[] = [
@@ -32,6 +33,20 @@
 		setTimeout(() => (notice = null), 4000);
 	}
 
+	/** Import and download need sign-in when the deployment has it enabled. */
+	function gate(action: string): boolean {
+		if (auth.mayTransfer) return true;
+		showProjects = false;
+		showExport = false;
+		flash(`Sign in with CodeCora ID to ${action}. Redirecting…`);
+		setTimeout(() => auth.signIn('/app'), 900);
+		return false;
+	}
+
+	function chooseFile() {
+		if (gate('import files')) fileInput.click();
+	}
+
 	async function importChosen(e: Event) {
 		const input = e.currentTarget as HTMLInputElement;
 		const file = input.files?.[0];
@@ -43,6 +58,7 @@
 	}
 
 	async function downloadAs(to: string) {
+		if (!gate('download files')) return;
 		showExport = false;
 		const err = await ws.exportFile(to);
 		if (err) flash(`Export failed: ${err}`);
@@ -105,7 +121,7 @@
 			{#if showProjects}
 				<div class="menu left" role="menu" aria-label="Projects">
 					<button role="menuitem" onclick={create}>＋ New project</button>
-					<button role="menuitem" onclick={() => fileInput.click()}>⇪ Import file…</button>
+					<button role="menuitem" onclick={chooseFile}>⇪ Import file…{#if !auth.mayTransfer}<span class="fmt">sign in</span>{/if}</button>
 					<button role="menuitem" onclick={rename}>✎ Rename…</button>
 					<button role="menuitem" class="danger" onclick={remove}>✕ Delete…</button>
 					{#if ws.projects.length}
@@ -164,11 +180,23 @@
 				{/each}
 				<div class="sep" role="separator"></div>
 				{#each DOWNLOADS as f (f.id)}
-					<button role="menuitem" onclick={() => downloadAs(f.id)}>Download {f.label}</button>
+					<button role="menuitem" onclick={() => downloadAs(f.id)}
+						>Download {f.label}{#if !auth.mayTransfer}<span class="fmt">sign in</span>{/if}</button
+					>
 				{/each}
 			</div>
 		{/if}
 	</div>
+	{#if auth.enabled}
+		{#if auth.user}
+			<form method="POST" action="/auth/logout" class="account">
+				<span class="who" title={auth.user.email}>{auth.user.name ?? auth.user.email}</span>
+				<button type="submit" class="link">Sign out</button>
+			</form>
+		{:else}
+			<button class="link" onclick={() => auth.signIn('/app')}>Sign in</button>
+		{/if}
+	{/if}
 	{#if showFidelity}<FidelityPanel />{/if}
 	{#if notice}<div class="notice" role="status">{notice}</div>{/if}
 </header>
@@ -254,6 +282,29 @@
 	}
 	.menu .danger:hover {
 		color: var(--err, #ff6b6b);
+	}
+	.account {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
+	}
+	.who {
+		max-width: 160px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-size: 12.5px;
+		color: var(--text-2);
+	}
+	.link {
+		font-size: 13px;
+		color: var(--text-2);
+		padding: 5px 8px;
+		border-radius: var(--r-sm);
+	}
+	.link:hover {
+		color: var(--text-1);
+		background: var(--bg-2);
 	}
 	.notice {
 		position: absolute;
