@@ -2,6 +2,20 @@
 // is no second model. Text and canvas edits both end in `analyze`, so what you see
 // is always what the core parsed.
 import { convert, toErd, type ErdDoc, type ErdNode, type Fidelity } from './core';
+import {
+	deleteProject,
+	download,
+	extensionFor,
+	fileBase,
+	formatFromFileName,
+	getProject,
+	lastProjectId,
+	listProjects,
+	newId,
+	persistent,
+	saveProject,
+	type ProjectSummary
+} from './projects';
 
 export type Layout = 'text' | 'canvas' | 'explorer';
 export const FORMATS = [
@@ -27,6 +41,13 @@ Ref: orders.user_id > users.id
 `;
 
 const DEBOUNCE_MS = 150;
+const SAVE_MS = 400;
+const BLANK = `Table new_table {
+  id integer [pk]
+}
+`;
+
+export type SaveState = 'saved' | 'saving' | 'unsaved' | 'error';
 
 class Workspace {
 	layout = $state<Layout>('text');
@@ -41,18 +62,165 @@ class Workspace {
 	/** Explorer focus mode: id of the focused table. */
 	focus = $state<string | null>(null);
 
+	/** Local project (IndexedDB). */
+	projectId = $state<string | null>(null);
+	projectName = $state('shop-demo');
+	projects = $state.raw<ProjectSummary[]>([]);
+	saveState = $state<SaveState>('saved');
+	/** False when IndexedDB is unavailable: projects last for this session only. */
+	persistent = $state(true);
+
 	#timer: ReturnType<typeof setTimeout> | undefined;
+	#saveTimer: ReturnType<typeof setTimeout> | undefined;
 	#seq = 0;
+
+	/** Open the last project, or the newest, or create the sample project. */
+	async boot() {
+		this.persistent = await persistent();
+		await this.refreshProjects();
+		const id = lastProjectId();
+		const target = this.projects.find((p) => p.id === id) ?? this.projects[0];
+		if (target) return this.openProject(target.id);
+		this.projectId = newId();
+		this.projectName = 'shop-demo';
+		await this.analyze();
+		await this.saveNow();
+	}
+
+	async refreshProjects() {
+		this.projects = await listProjects().catch(() => []);
+	}
+
+	/** Debounced autosave after any change to the text or the canvas. */
+	scheduleSave() {
+		if (!this.projectId) return;
+		this.saveState = 'unsaved';
+		clearTimeout(this.#saveTimer);
+		this.#saveTimer = setTimeout(() => this.saveNow(), SAVE_MS);
+	}
+
+	async saveNow() {
+		clearTimeout(this.#saveTimer);
+		if (!this.projectId) return;
+		this.saveState = 'saving';
+		try {
+			await saveProject({
+				id: this.projectId,
+				name: this.projectName,
+				format: this.format,
+				text: this.text,
+				erd: this.erd,
+				updatedAt: Date.now()
+			});
+			this.saveState = 'saved';
+			// update the list in memory: re-reading every project body on each
+			// autosave would be wasteful
+			const summary = { id: this.projectId, name: this.projectName, format: this.format, updatedAt: Date.now() };
+			this.projects = [summary, ...this.projects.filter((p) => p.id !== summary.id)];
+		} catch {
+			this.saveState = 'error';
+		}
+	}
+
+	async openProject(id: string) {
+		if (this.saveState === 'unsaved') await this.saveNow();
+		const p = await getProject(id);
+		if (!p) return;
+		this.projectId = p.id;
+		this.projectName = p.name;
+		this.format = p.format;
+		this.text = p.text;
+		this.erd = p.erd; // positions survive: analyze keeps them by node id
+		this.hidden = new Set();
+		this.focus = null;
+		await this.analyze(false);
+		this.saveState = 'saved';
+		await this.saveNow(); // remembers it as the last project
+	}
+
+	async newProject(name = 'Untitled', format = 'dbml', text = BLANK, erd: ErdDoc | null = null) {
+		if (this.saveState === 'unsaved') await this.saveNow();
+		this.projectId = newId();
+		this.projectName = name;
+		this.format = format;
+		this.text = text;
+		this.erd = erd;
+		this.hidden = new Set();
+		this.focus = null;
+		await this.analyze(false);
+		await this.saveNow();
+	}
+
+	async renameProject(name: string) {
+		const n = name.trim();
+		if (!n || n === this.projectName) return;
+		this.projectName = n;
+		await this.saveNow();
+	}
+
+	async deleteCurrentProject() {
+		if (!this.projectId) return;
+		clearTimeout(this.#saveTimer);
+		await deleteProject(this.projectId).catch(() => {});
+		this.projectId = null;
+		await this.refreshProjects();
+		const next = this.projects[0];
+		if (next) await this.openProject(next.id);
+		else await this.newProject();
+	}
+
+	/** Import a schema file as a new project. ERD-JSON keeps its canvas positions. */
+	async importFile(file: File): Promise<string | null> {
+		const src = await file.text();
+		const name = file.name.replace(/\.[^.]+$/, '') || 'Imported';
+		const from = formatFromFileName(file.name);
+		if (from === 'erdjson') {
+			const r = await convert(src, 'erdjson', 'dbml');
+			if (!r.ok) return r.error;
+			await this.newProject(name, 'dbml', r.output, JSON.parse(src));
+			return null;
+		}
+		const r = await toErd(src, from);
+		if (!r.ok) return r.error;
+		const used = r.from ?? from;
+		if (used === 'erdjson') {
+			const back = await convert(src, 'erdjson', 'dbml');
+			if (!back.ok) return back.error;
+			await this.newProject(name, 'dbml', back.output, JSON.parse(src));
+			return null;
+		}
+		const format = FORMATS.some((f) => f.id === used) ? used : 'sql';
+		await this.newProject(name, format, src);
+		return null;
+	}
+
+	/** Download the current schema in `format` (ERD-JSON keeps canvas positions). */
+	async exportFile(format: string): Promise<string | null> {
+		if (!this.erd) return 'nothing to export yet';
+		let text: string;
+		if (format === 'erdjson') text = JSON.stringify(this.erd, null, 2) + '\n';
+		else if (format === this.format) text = this.text;
+		else {
+			const r = await convert(JSON.stringify(this.erd), 'erdjson', format);
+			if (!r.ok) return r.error;
+			text = r.output;
+		}
+		download(`${fileBase(this.projectName)}.${extensionFor(format)}`, text);
+		return null;
+	}
 
 	/** Text-pane edit: debounced re-parse. */
 	setText(text: string) {
 		this.text = text;
+		// mark dirty now (not after the debounced parse) so switching projects
+		// right after typing still flushes the last keystrokes
+		this.scheduleSave();
 		clearTimeout(this.#timer);
 		this.#timer = setTimeout(() => this.analyze(), DEBOUNCE_MS);
 	}
 
 	/** Parse `text` → erd. Positions of nodes already on the canvas survive. */
-	async analyze() {
+	async analyze(save = true) {
 		const seq = ++this.#seq;
 		const r = await toErd(this.text, this.format);
 		if (seq !== this.#seq) return; // a newer edit superseded this one
@@ -67,6 +235,7 @@ class Workspace {
 		this.fidelity = r.fidelity;
 		this.parseMs = r.ms;
 		this.error = null;
+		if (save) this.scheduleSave();
 	}
 
 	/** Switch the text pane's format by re-emitting the current erd. */
@@ -81,6 +250,7 @@ class Workspace {
 		this.text = r.output;
 		this.fidelity = r.fidelity;
 		this.error = null;
+		this.scheduleSave();
 	}
 
 	/** Canvas edit: regenerate text from the edited doc, then re-parse it back. */
@@ -104,6 +274,7 @@ class Workspace {
 			meta: { ...this.erd.meta, layout: 'manual' },
 			nodes: this.erd.nodes.map((n) => ({ ...n, position: positions.get(n.id) ?? n.position }))
 		};
+		this.scheduleSave();
 	}
 
 	addTable() {

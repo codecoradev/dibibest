@@ -14,7 +14,13 @@
 	};
 
 	onMount(() => {
-		ws.analyze();
+		ws.boot();
+		// best effort: flush a pending autosave when the tab is hidden or closed
+		const flush = () => {
+			if (ws.saveState === 'unsaved') ws.saveNow();
+		};
+		document.addEventListener('visibilitychange', flush);
+		window.addEventListener('pagehide', flush);
 		// ⌘/ (Ctrl+/) cycles the three layouts over the same ERD-JSON state.
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key === '/' && (e.metaKey || e.ctrlKey)) {
@@ -23,7 +29,11 @@
 			}
 		};
 		window.addEventListener('keydown', onKey);
-		return () => window.removeEventListener('keydown', onKey);
+		return () => {
+			window.removeEventListener('keydown', onKey);
+			document.removeEventListener('visibilitychange', flush);
+			window.removeEventListener('pagehide', flush);
+		};
 	});
 </script>
 

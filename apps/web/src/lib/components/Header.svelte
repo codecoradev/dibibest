@@ -10,10 +10,64 @@
 		{ id: 'explorer', label: '☰ Explorer' }
 	];
 	const EXPORTS = [...FORMATS, { id: 'erdjson', label: 'ERD-JSON' }];
+	const DOWNLOADS = [
+		{ id: 'dbml', label: 'DBML' },
+		{ id: 'sql', label: 'SQL (PostgreSQL)' },
+		{ id: 'sql:mysql', label: 'SQL (MySQL)' },
+		{ id: 'sql:sqlite', label: 'SQL (SQLite)' },
+		{ id: 'prisma', label: 'Prisma' },
+		{ id: 'erdjson', label: 'ERD-JSON' }
+	];
+	const SAVE_LABEL = { saved: 'Saved locally', saving: 'Saving…', unsaved: 'Unsaved changes', error: 'Not saved' };
 
 	let showFidelity = $state(false);
 	let showExport = $state(false);
+	let showProjects = $state(false);
 	let copied = $state<string | null>(null);
+	let notice = $state<string | null>(null);
+	let fileInput: HTMLInputElement;
+
+	function flash(msg: string) {
+		notice = msg;
+		setTimeout(() => (notice = null), 4000);
+	}
+
+	async function importChosen(e: Event) {
+		const input = e.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		input.value = '';
+		showProjects = false;
+		if (!file) return;
+		const err = await ws.importFile(file);
+		flash(err ? `Import failed: ${err}` : `Imported ${file.name}`);
+	}
+
+	async function downloadAs(to: string) {
+		showExport = false;
+		const err = await ws.exportFile(to);
+		if (err) flash(`Export failed: ${err}`);
+	}
+
+	async function rename() {
+		showProjects = false;
+		const name = prompt('Project name', ws.projectName);
+		if (name !== null) await ws.renameProject(name);
+	}
+
+	async function remove() {
+		showProjects = false;
+		if (confirm(`Delete "${ws.projectName}" from this browser? This cannot be undone.`)) await ws.deleteCurrentProject();
+	}
+
+	async function create() {
+		showProjects = false;
+		await ws.newProject();
+	}
+
+	async function open(id: string) {
+		showProjects = false;
+		await ws.openProject(id);
+	}
 
 	// Chip numbers come straight from the core Fidelity struct.
 	const chip = $derived.by(() => {
@@ -38,7 +92,46 @@
 </script>
 
 <header class="topbar">
-	<div class="brand"><span class="mark">db</span> dibibest <span class="project-name">/ shop-demo</span></div>
+	<div class="brand">
+		<span class="mark">db</span> dibibest
+		<div class="projects">
+			<button
+				class="project-name"
+				aria-haspopup="menu"
+				aria-expanded={showProjects}
+				aria-label="Projects: {ws.projectName}"
+				onclick={() => (showProjects = !showProjects)}>/ {ws.projectName} ▾</button
+			>
+			{#if showProjects}
+				<div class="menu left" role="menu" aria-label="Projects">
+					<button role="menuitem" onclick={create}>＋ New project</button>
+					<button role="menuitem" onclick={() => fileInput.click()}>⇪ Import file…</button>
+					<button role="menuitem" onclick={rename}>✎ Rename…</button>
+					<button role="menuitem" class="danger" onclick={remove}>✕ Delete…</button>
+					{#if ws.projects.length}
+						<div class="sep" role="separator"></div>
+						<div class="menu-label">Saved in this browser</div>
+						{#each ws.projects as p (p.id)}
+							<button role="menuitem" aria-current={p.id === ws.projectId} onclick={() => open(p.id)}>
+								{p.name}<span class="fmt">{p.format}</span>
+							</button>
+						{/each}
+					{/if}
+				</div>
+			{/if}
+		</div>
+		<input
+			bind:this={fileInput}
+			type="file"
+			accept=".dbml,.sql,.prisma,.json,.txt"
+			aria-label="Import schema file"
+			hidden
+			onchange={importChosen}
+		/>
+	</div>
+	<span class="save" class:warn={ws.saveState === 'error' || !ws.persistent} title={ws.persistent ? '' : 'Browser storage is unavailable: projects last for this session only'}>
+		{ws.persistent ? SAVE_LABEL[ws.saveState] : 'Session only'}
+	</span>
 	{#if ws.layout === 'text'}
 		<div class="seg" role="tablist" aria-label="Source format">
 			{#each FORMATS as f (f.id)}
@@ -69,10 +162,15 @@
 				{#each EXPORTS as f (f.id)}
 					<button role="menuitem" onclick={() => exportAs(f.id)}>Copy as {f.label}</button>
 				{/each}
+				<div class="sep" role="separator"></div>
+				{#each DOWNLOADS as f (f.id)}
+					<button role="menuitem" onclick={() => downloadAs(f.id)}>Download {f.label}</button>
+				{/each}
 			</div>
 		{/if}
 	</div>
 	{#if showFidelity}<FidelityPanel />{/if}
+	{#if notice}<div class="notice" role="status">{notice}</div>{/if}
 </header>
 
 <style>
@@ -104,9 +202,71 @@
 		font-weight: 800;
 		color: #0b0d10;
 	}
+	.projects {
+		position: relative;
+	}
 	.project-name {
 		color: var(--text-2);
 		font-weight: 500;
+		padding: 4px 6px;
+		border-radius: var(--r-sm);
+	}
+	.project-name:hover {
+		background: var(--bg-2);
+		color: var(--text-1);
+	}
+	.save {
+		font-size: 12px;
+		color: var(--text-3, var(--text-2));
+		white-space: nowrap;
+	}
+	.save.warn {
+		color: var(--warn);
+	}
+	.menu.left {
+		left: 0;
+		right: auto;
+		min-width: 240px;
+		max-height: 70vh;
+		overflow-y: auto;
+	}
+	.menu .sep {
+		height: 1px;
+		background: var(--line);
+		margin: var(--sp-1) 0;
+	}
+	.menu-label {
+		font-size: 11px;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--text-2);
+		padding: 4px var(--sp-3);
+	}
+	.menu button[aria-current='true'] {
+		color: var(--text-1);
+		background: var(--bg-3);
+	}
+	.menu .fmt {
+		float: right;
+		font-size: 11px;
+		color: var(--text-2);
+		margin-left: var(--sp-3);
+	}
+	.menu .danger:hover {
+		color: var(--err, #ff6b6b);
+	}
+	.notice {
+		position: absolute;
+		top: 52px;
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 40;
+		background: var(--bg-2);
+		border: 1px solid var(--line);
+		border-radius: var(--r-md);
+		padding: 6px 14px;
+		font-size: 13px;
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 	}
 	.seg {
 		display: flex;
@@ -180,6 +340,7 @@
 		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 	}
 	.menu button {
+		white-space: nowrap;
 		text-align: left;
 		padding: 7px var(--sp-3);
 		border-radius: var(--r-sm);

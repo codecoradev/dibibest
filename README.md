@@ -127,6 +127,13 @@ cd apps/web && bun install && bun run dev
 Tiga layout (text-first, canvas-first, explorer) di atas satu ERD-JSON; konversi
 jalan lewat core yang sama, dikompilasi ke WASM. Tidak ada upload.
 
+Proyek disimpan di browser (IndexedDB), tanpa akun dan tanpa server: buat,
+buka, ganti nama, dan hapus lewat menu nama proyek di kiri atas. **Import** file
+`.dbml`, `.sql`, `.prisma`, atau ERD-JSON (`.json`, posisi kanvas ikut) sebagai
+proyek baru; **Export → Download** menyimpan skema dalam format apa pun. Data
+proyek hanya ada di browser itu: pakai Download untuk cadangan atau pindah
+perangkat.
+
 | Laporan fidelity (klik chip "round-trip") | Explorer: cari & sembunyikan tabel di skema besar |
 |---|---|
 | ![Fidelity report panel: kept/total for tables, columns, refs, indexes and round-trip idempotency](docs/screenshots/fidelity-panel.png) | ![Explorer layout: table list with search and visibility toggles next to the ERD canvas](docs/screenshots/explorer.png) |
