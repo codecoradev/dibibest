@@ -32,13 +32,39 @@ impl SqlCodec {
         SqlCodec { dialect }
     }
 
-    /// Identifier quoting: backticks for MySQL; PG/SQLite stay bare (as before).
+    /// Quote ONE identifier (column, index, or one part of a table name). A dot
+    /// is part of the name here: `"v1.2"` stays a single column.
+    /// MySQL: always backticks. PG/SQLite: plain names stay bare (unchanged
+    /// output); anything else — spaces, dashes, dots, a leading digit, reserved
+    /// words — is double-quoted with inner `"` doubled, so the emitted DDL
+    /// re-parses and a name can never break out of its quotes.
     fn q(&self, ident: &str) -> String {
         if self.dialect == Dialect::MySql {
-            format!("`{}`", ident.replace('`', "``"))
-        } else {
-            ident.to_string()
+            return format!("`{}`", ident.replace('`', "``"));
         }
+        let plain = ident
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && ident.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !is_reserved(ident);
+        if plain {
+            ident.to_string()
+        } else {
+            format!("\"{}\"", ident.replace('"', "\"\""))
+        }
+    }
+
+    /// Quote a table name, which may be schema-qualified: each dotted part is
+    /// quoted separately (`billing.plans` → `` `billing`.`plans` `` on MySQL).
+    /// The DBML codec already reads a dotted table name as schema.table (see
+    /// docs/dbml-gaps.md), so this matches the IR's meaning.
+    fn qt(&self, table: &str) -> String {
+        table
+            .split('.')
+            .map(|p| self.q(p))
+            .collect::<Vec<_>>()
+            .join(".")
     }
 
     fn qs(&self, idents: &[String]) -> String {
@@ -277,7 +303,7 @@ impl Codec for SqlCodec {
                 let mut fk = format!(
                     "  FOREIGN KEY ({}) REFERENCES {}({})",
                     self.qs(fk_cols),
-                    self.q(pk_table),
+                    self.qt(pk_table),
                     self.qs(&pk_cols)
                 );
                 for (when, act) in [("DELETE", &r.on_delete), ("UPDATE", &r.on_update)] {
@@ -290,7 +316,7 @@ impl Codec for SqlCodec {
             let _ = writeln!(
                 out,
                 "CREATE TABLE {} (\n{}\n);",
-                self.q(&t.name),
+                self.qt(&t.name),
                 lines.join(",\n")
             );
             for idx in &t.indexes {
@@ -330,7 +356,7 @@ impl Codec for SqlCodec {
                     "{} {} ON {} ({}){};",
                     kw,
                     self.q(&name),
-                    self.q(&t.name),
+                    self.qt(&t.name),
                     target,
                     pred
                 );
@@ -349,8 +375,134 @@ fn part_str(p: &sqlparser::ast::ObjectNamePart) -> String {
     p.as_ident().map(ident_str).unwrap_or_else(|| p.to_string())
 }
 
+/// Words that cannot be a bare identifier in at least one emitted dialect:
+/// PostgreSQL's reserved keywords plus common MySQL/SQLite ones (`key`, `index`).
+/// Names like `user` or `order` are common table names, so they get quoted.
+const RESERVED: &[&str] = &[
+    "all",
+    "alter",
+    "analyse",
+    "analyze",
+    "and",
+    "any",
+    "array",
+    "as",
+    "asc",
+    "asymmetric",
+    "authorization",
+    "between",
+    "binary",
+    "both",
+    "by",
+    "case",
+    "cast",
+    "check",
+    "collate",
+    "collation",
+    "column",
+    "concurrently",
+    "constraint",
+    "create",
+    "cross",
+    "current_catalog",
+    "current_date",
+    "current_role",
+    "current_schema",
+    "current_time",
+    "current_timestamp",
+    "current_user",
+    "default",
+    "deferrable",
+    "delete",
+    "desc",
+    "distinct",
+    "do",
+    "drop",
+    "else",
+    "end",
+    "except",
+    "exists",
+    "false",
+    "fetch",
+    "for",
+    "foreign",
+    "freeze",
+    "from",
+    "full",
+    "grant",
+    "group",
+    "having",
+    "if",
+    "ilike",
+    "in",
+    "index",
+    "initially",
+    "inner",
+    "insert",
+    "intersect",
+    "into",
+    "is",
+    "isnull",
+    "join",
+    "key",
+    "lateral",
+    "leading",
+    "left",
+    "like",
+    "limit",
+    "localtime",
+    "localtimestamp",
+    "natural",
+    "not",
+    "notnull",
+    "null",
+    "offset",
+    "on",
+    "only",
+    "or",
+    "order",
+    "outer",
+    "overlaps",
+    "placing",
+    "primary",
+    "references",
+    "returning",
+    "right",
+    "select",
+    "session_user",
+    "set",
+    "similar",
+    "some",
+    "symmetric",
+    "system_user",
+    "table",
+    "tablesample",
+    "then",
+    "to",
+    "trailing",
+    "true",
+    "union",
+    "unique",
+    "update",
+    "user",
+    "using",
+    "values",
+    "variadic",
+    "verbose",
+    "when",
+    "where",
+    "window",
+    "with",
+];
+
+fn is_reserved(ident: &str) -> bool {
+    RESERVED.contains(&ident.to_ascii_lowercase().as_str())
+}
+
+/// Full dotted name: `billing.tenants` keeps its schema, so refs to it still
+/// match the table after a round-trip.
 fn object_name_to_string(o: &ObjectName) -> String {
-    o.0.last().map(part_str).unwrap_or_else(|| o.to_string())
+    o.0.iter().map(part_str).collect::<Vec<_>>().join(".")
 }
 
 fn index_col_str(ic: &sqlparser::ast::IndexColumn) -> String {

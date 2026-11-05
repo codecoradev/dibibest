@@ -87,3 +87,53 @@ fn unknown_settings_are_preserved_and_round_trip() {
     assert!(out.contains("// unknown: color: #f00"));
     assert_eq!(dbml.parse(&out).unwrap(), ir);
 }
+
+/// Every corpus file converts to every target format, the output re-parses,
+/// and no table, column or ref is lost. Indexes are excluded: expression /
+/// partial indexes are a documented capability gap for some targets, reported
+/// in `dropped`. Regression for #45 (3 files failed DBML → SQL outright).
+#[test]
+fn corpus_converts_to_every_format() {
+    let reg = Registry::with_defaults();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus");
+    let mut files: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "dbml"))
+        .collect();
+    files.sort();
+    let mut failures = Vec::new();
+    for f in &files {
+        let src = fs::read_to_string(f).unwrap();
+        let name = f.file_name().unwrap().to_string_lossy();
+        for to in [
+            "sql",
+            "sql:mysql",
+            "sql:sqlite",
+            "prisma",
+            "erdjson",
+            "dbml",
+        ] {
+            let id = FormatId::new(to);
+            match reg.convert_explicit(&src, &FormatId::new("dbml"), &id) {
+                Err(e) => failures.push(format!("{name} -> {to}: {e}")),
+                Ok(c) => {
+                    let fid = &c.fidelity;
+                    for (what, o) in [
+                        ("tables", &fid.tables),
+                        ("columns", &fid.columns),
+                        ("refs", &fid.refs),
+                    ] {
+                        if o.kept != o.total {
+                            failures.push(format!("{name} -> {to}: {what} {}/{}", o.kept, o.total));
+                        }
+                    }
+                    if let Err(e) = reg.parse(&c.output, &id) {
+                        failures.push(format!("{name} -> {to}: output does not re-parse: {e}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

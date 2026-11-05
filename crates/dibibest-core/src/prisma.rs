@@ -315,13 +315,15 @@ fn default_to_prisma(d: &str, string_col: bool) -> String {
         d.into()
     } else if l == "true" || l == "false" || d.parse::<f64>().is_ok() {
         l
-    } else if string_col && !d.contains('(') {
-        quote(d)
+    } else if let Some(s) = as_sql_string(d).filter(|_| string_col) {
+        quote(&s)
     } else {
+        // any other SQL expression (incl. NULL and non-text literals) verbatim
         format!("dbgenerated({})", quote(d))
     }
 }
 
+/// Prisma `@default(…)` args → IR SQL expression text (see `Column::default`).
 fn default_from_prisma(args: &str) -> Option<String> {
     let a = args.trim();
     if let Some(inner) = a
@@ -331,7 +333,7 @@ fn default_from_prisma(args: &str) -> Option<String> {
         return Some(unquote(inner));
     }
     Some(if a.starts_with('"') {
-        unquote(a)
+        sql_string_literal(&unquote(a))
     } else {
         a.to_string()
     })
@@ -665,7 +667,18 @@ fn resolve(
                 not_null: pk || !(f.optional || f.list),
                 unique: attr(&f.attrs, "@unique").is_some(),
                 autoincrement: autoinc,
-                default: default.filter(|_| !autoinc).and_then(default_from_prisma),
+                default: default
+                    .filter(|_| !autoinc)
+                    .and_then(default_from_prisma)
+                    // an enum default is a bare member name: the IR stores it as
+                    // the SQL string literal it is in DDL
+                    .map(|d| {
+                        if enum_of.contains_key(f.base.as_str()) && is_ident(&d) {
+                            sql_string_literal(&d)
+                        } else {
+                            d
+                        }
+                    }),
                 note: f.note.clone(),
                 unknown: f.unknown.clone(),
             });
@@ -952,8 +965,11 @@ fn emit_prisma(ir: &SchemaIR) -> String {
                 out.push_str(" @default(autoincrement())");
             } else if let Some(d) = &c.default {
                 let stringy = pty == "String" || pty.starts_with("Unsupported");
-                let v = if enum_name(bare).is_some() && is_ident(d) {
-                    d.clone() // enum defaults are bare identifiers
+                let member = as_sql_string(d).filter(|m| is_ident(m));
+                let v = if let Some(m) = member.filter(|_| enum_name(bare).is_some()) {
+                    m // enum defaults are bare identifiers
+                } else if enum_name(bare).is_some() && is_ident(d) {
+                    d.clone()
                 } else {
                     default_to_prisma(d, stringy && !array)
                 };

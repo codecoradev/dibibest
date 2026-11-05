@@ -27,7 +27,6 @@ Corpus: `crates/dibibest-core/tests/corpus/*.dbml`, gate ≥95% in
 
 | Construct | Example | Becomes |
 |---|---|---|
-| Default literal kind | `default: 'free'`, `default: 0` | `` default: `free` `` — string/number/expression distinction is not stored. |
 | Setting order | `[note: 'x', pk]` | `[pk, …, note: 'x']` |
 | Inline refs | `owner_id int [ref: > users.id]` | Hoisted to a top-level `Ref:` line. |
 | Ref blocks | `Ref { a.b > c.d }` | One `Ref:` line per relation. |

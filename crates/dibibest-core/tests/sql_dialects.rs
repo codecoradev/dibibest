@@ -164,3 +164,92 @@ fn fk_without_referenced_columns_never_emits_empty_parens() {
     assert!(!out.contains("()") && !out.contains("FOREIGN KEY"), "{out}");
     assert!(reg.parse(&out, &id("sql")).unwrap().refs.is_empty());
 }
+
+#[test]
+fn mysql_quotes_schema_qualified_names_per_part() {
+    let src = "Table billing.plans {\n  id int [pk]\n}\nTable billing.subs {\n  id int [pk]\n  \
+               plan_id int [ref: > billing.plans.id]\n}\n";
+    let conv = dibibest_core::Registry::with_defaults()
+        .convert_explicit(
+            src,
+            &dibibest_core::FormatId::new("dbml"),
+            &dibibest_core::FormatId::new("sql:mysql"),
+        )
+        .unwrap();
+    assert!(
+        conv.output.contains("CREATE TABLE `billing`.`plans` ("),
+        "{}",
+        conv.output
+    );
+    assert!(
+        conv.output.contains("REFERENCES `billing`.`plans`(`id`)"),
+        "{}",
+        conv.output
+    );
+    assert_eq!((conv.fidelity.refs.kept, conv.fidelity.refs.total), (1, 1));
+}
+
+#[test]
+fn dotted_column_name_stays_one_identifier() {
+    // A dot inside a column name is not a schema separator (CodeCora finding on #48).
+    let src = "Table t {\n  id int [pk]\n  \"v1.2\" int\n}\n";
+    let reg = dibibest_core::Registry::with_defaults();
+    for (to, want) in [
+        ("sql", "\"v1.2\" int"),
+        ("sql:sqlite", "\"v1.2\" int"),
+        ("sql:mysql", "`v1.2` int"),
+    ] {
+        let id = dibibest_core::FormatId::new(to);
+        let conv = reg
+            .convert_explicit(src, &dibibest_core::FormatId::new("dbml"), &id)
+            .unwrap();
+        assert!(conv.output.contains(want), "{to}:\n{}", conv.output);
+        let back = reg.parse(&conv.output, &id).unwrap();
+        assert!(
+            back.tables[0].columns.iter().any(|c| c.name == "v1.2"),
+            "{to}"
+        );
+        assert_eq!(conv.fidelity.columns.kept, 2, "{to}");
+    }
+}
+
+#[test]
+fn quotes_inside_a_name_cannot_break_out() {
+    // Cora finding on #48: a name that starts and ends with `"` used to pass
+    // through raw, so `"x" int, "y"` became two column definitions.
+    let src = "CREATE TABLE t (id int PRIMARY KEY, \"\"\"x\"\" int, \"\"y\"\"\" int);";
+    let reg = dibibest_core::Registry::with_defaults();
+    for to in ["sql", "sql:sqlite", "sql:mysql"] {
+        let id = dibibest_core::FormatId::new(to);
+        let conv = reg
+            .convert_explicit(src, &dibibest_core::FormatId::new("sql"), &id)
+            .unwrap();
+        let back = reg.parse(&conv.output, &id).unwrap();
+        let names: Vec<&str> = back.tables[0]
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, ["id", "\"x\" int, \"y\""], "{to}:\n{}", conv.output);
+    }
+}
+
+#[test]
+fn dbml_index_columns_are_unquoted_identifiers() {
+    let src = "Table \"User Accounts\" {\n  ID int [pk]\n  \"e-mail\" varchar\n\n  \
+               indexes {\n    (\"e-mail\", ID) [name: 'ua']\n  }\n}\n";
+    let reg = dibibest_core::Registry::with_defaults();
+    let ir = reg
+        .parse(src, &dibibest_core::FormatId::new("dbml"))
+        .unwrap();
+    assert_eq!(ir.tables[0].indexes[0].columns, ["e-mail", "ID"]);
+    let mysql = reg
+        .convert_explicit(
+            src,
+            &dibibest_core::FormatId::new("dbml"),
+            &dibibest_core::FormatId::new("sql:mysql"),
+        )
+        .unwrap()
+        .output;
+    assert!(mysql.contains("(`e-mail`, `ID`)"), "{mysql}");
+}
