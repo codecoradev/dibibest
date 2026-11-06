@@ -3,7 +3,7 @@
 // is always what the core parsed.
 import { convert, renderSvg, toErd, type ErdDoc, type ErdNode, type Fidelity } from './core';
 import { svgToPng } from './diagram';
-import { placeNodes } from './layout';
+import { placeNodes, sanitizeErd } from './layout';
 import {
 	deleteProject,
 	download,
@@ -145,7 +145,9 @@ class Workspace {
 		this.projectName = p.name;
 		this.format = p.format;
 		this.text = p.text;
-		this.erd = p.erd; // positions survive: analyze keeps them by node id
+		// positions survive: analyze keeps them by node id. Sanitized: a project
+		// saved by an older build may hold duplicates that would crash the canvas.
+		this.erd = sanitizeErd(p.erd);
 		this.hidden = new Set();
 		this.focus = null;
 		await this.analyze(false);
@@ -159,7 +161,7 @@ class Workspace {
 		this.projectName = name;
 		this.format = format;
 		this.text = text;
-		this.erd = erd;
+		this.erd = sanitizeErd(erd);
 		this.hidden = new Set();
 		this.focus = null;
 		await this.analyze(false);

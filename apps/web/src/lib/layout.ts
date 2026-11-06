@@ -3,7 +3,7 @@
 // the canvas were empty, which can land on top of a table that stayed. New
 // tables go to the first free grid cell instead.
 
-import type { ErdNode } from './core';
+import type { ErdDoc, ErdNode } from './core';
 
 /** Same cell as the core grid (erdjson::GRID_CELL_W/H) and the table card width. */
 const CELL_W = 320;
@@ -48,4 +48,26 @@ export function placeNodes(nodes: ErdNode[], kept: Map<string, ErdNode['position
 			}
 		}
 	}
+}
+
+/**
+ * A diagram stored by an older build may hold duplicates the core now refuses
+ * (two columns or tables with one name): the canvas keys them by name/id, so
+ * rendering it crashed the whole page (500) on every open. Keep the first of
+ * each; returns null when there is nothing usable.
+ */
+export function sanitizeErd(doc: ErdDoc | null | undefined): ErdDoc | null {
+	if (!doc || !Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) return null;
+	const ids = new Set<string>();
+	const nodes = doc.nodes
+		.filter((n) => n && typeof n.id === 'string' && Array.isArray(n.columns) && !ids.has(n.id) && ids.add(n.id))
+		.map((n) => {
+			const names = new Set<string>();
+			return { ...n, columns: n.columns.filter((c) => !names.has(c.name) && names.add(c.name)) };
+		});
+	const edgeIds = new Set<string>();
+	const edges = doc.edges.filter(
+		(e) => e && ids.has(e.from?.table) && ids.has(e.to?.table) && !edgeIds.has(e.id) && edgeIds.add(e.id)
+	);
+	return { ...doc, nodes, edges };
 }
