@@ -94,8 +94,11 @@ running the core compiled to WASM inside a Pages Function. Client config:
   2025-06-18 and 2025-03-26, negotiated in `initialize`. The
   `MCP-Protocol-Version` header is not gated. Claude opens with
   `server/discover` (MCP 2026-07-28), gets JSON-RPC -32601 with HTTP 200, and
-  falls back to `initialize`. Requests from a foreign browser `Origin` are
-  refused. Bodies over 512 KB get 413.
+  falls back to `initialize`. Browser origins get CORS (claude.ai sends
+  `Origin: https://claude.ai`). The origin is echoed, `WWW-Authenticate` is
+  exposed, and `OPTIONS` preflight is answered. This is safe because every
+  request needs a bearer token and no cookie is read. Bodies over 512 KB get
+  413.
 - **Logs:** each call logs `mcp: <method>`, and refused tokens log the reason
   (never the token). See Workers & Pages → dibibest → Functions → Real-time
   logs.

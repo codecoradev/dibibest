@@ -178,15 +178,49 @@ async function dispatch(msg: RpcMessage, core: Core): Promise<object> {
 	}
 }
 
-/** POST /mcp (and 405 for GET/DELETE: no server-initiated stream, no sessions). */
-export async function handleMcp(req: Request, env: Env, core: Core, fetcher: Fetch = fetch): Promise<Response> {
-	const issuer = issuerOf(env);
-	if (!issuer) return NOT_CONFIGURED();
-	if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405, { allow: 'POST' });
+const CORS_ALLOW_HEADERS =
+	'authorization, content-type, accept, mcp-protocol-version, mcp-session-id, mcp-method, mcp-name, last-event-id';
 
-	// DNS-rebinding guard from the transport spec: browsers must come from this origin.
+/**
+ * CORS for MCP clients that call from a browser origin (claude.ai sends
+ * `Origin: https://claude.ai`). Every request needs a bearer token and no
+ * cookie is read, so a cross-origin page cannot act for a user. That is why
+ * any origin is echoed instead of refused (a 403 here broke the Claude
+ * connector, #68).
+ */
+function withCors(req: Request, res: Response): Response {
 	const origin = req.headers.get('origin');
-	if (origin && origin !== new URL(req.url).origin) return json({ error: 'origin not allowed' }, 403);
+	if (!origin) return res;
+	const headers = new Headers(res.headers);
+	headers.set('access-control-allow-origin', origin);
+	headers.set('access-control-expose-headers', 'www-authenticate, mcp-session-id, mcp-protocol-version');
+	headers.append('vary', 'origin');
+	return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
+/** /mcp: CORS preflight, then the MCP transport. */
+export async function handleMcp(req: Request, env: Env, core: Core, fetcher: Fetch = fetch): Promise<Response> {
+	if (!issuerOf(env)) return NOT_CONFIGURED();
+	if (req.method === 'OPTIONS') {
+		return withCors(
+			req,
+			new Response(null, {
+				status: 204,
+				headers: {
+					'access-control-allow-methods': 'POST, GET, DELETE, OPTIONS',
+					'access-control-allow-headers': CORS_ALLOW_HEADERS,
+					'access-control-max-age': '86400'
+				}
+			})
+		);
+	}
+	return withCors(req, await serve(req, env, core, fetcher));
+}
+
+/** POST /mcp (and 405 for GET/DELETE: no server-initiated stream, no sessions). */
+async function serve(req: Request, env: Env, core: Core, fetcher: Fetch): Promise<Response> {
+	const issuer = issuerOf(env)!;
+	if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405, { allow: 'POST, OPTIONS' });
 
 	const auth = req.headers.get('authorization') ?? '';
 	const m = /^Bearer\s+([A-Za-z0-9._~+/=-]+)$/i.exec(auth.trim());
