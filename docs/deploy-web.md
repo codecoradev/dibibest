@@ -105,19 +105,33 @@ running the core compiled to WASM inside a Pages Function. Client config:
 
 ### Gatehouse setup for MCP (owner)
 
-Gatehouse issues a JWT access token only for a registered resource, and only
-to clients linked to it:
+Gatehouse (`identity.azfirazka.com`) issues a JWT access token for `/mcp` only
+when the URL is a configured resource. Otherwise the authorize step answers
+`invalid_target` ("requested resource … is not configured"), and Claude shows
+"Authorization with dibibest failed".
 
-1. add the resource `https://dibibest.codecora.dev/mcp` (and
-   `https://dibibest.pages.dev/mcp` if that hostname is used) to the
-   `oauthProvider` `resources`;
-2. link MCP clients to it. They register by CIMD, so set
-   `clientRegistrationDefaultResources` to include the resource rather than
-   turning off `enforcePerClientResources` (which would let any registered
-   client get tokens for every API);
-3. optionally add the authorization server metadata at the root
-   (`/.well-known/oauth-authorization-server/api/auth`) for clients that try
-   RFC 8414 before OpenID discovery.
+1. Add the MCP URL to the Gatehouse env **`OAUTH_RESOURCES`** (exact match,
+   next to the existing entries such as `https://uteke.app/mcp`), then restart
+   Gatehouse. Done 2026-11-06 for `https://dibibest.codecora.dev/mcp`. Add
+   `https://dibibest.pages.dev/mcp` too only if that hostname is used.
+2. Clients register by **CIMD**. Gatehouse runs `CIMD_ENABLED` with
+   `CIMD_ALLOWED_ORIGINS=https://claude.ai`, which covers claude.ai, Desktop,
+   mobile and Claude Code, so no client ID, secret or API key is needed. Other
+   clients (ChatGPT, Cursor, …) need their metadata-document origin allowed.
+3. Tokens: with `resource=<MCP URL>` the token is an RS256 JWT with
+   `aud = [resource, userinfo]` and `azp = client_id`. Without `resource` it is
+   opaque, and `/mcp` refuses it. Tokens carry no email (the endpoint only
+   needs `sub`). They live one hour and cannot be revoked early.
+
+Check after a change. With Claude's CIMD client id, the authorize step must
+redirect to `identity.azfirazka.com/login`, not back with `invalid_target`:
+
+```bash
+curl -s -o /dev/null -w '%{redirect_url}\n' "https://identity.azfirazka.com/api/auth/oauth2/authorize?response_type=code&client_id=https%3A%2F%2Fclaude.ai%2Foauth%2Fmcp-oauth-client-metadata&redirect_uri=https%3A%2F%2Fclaude.ai%2Fapi%2Fmcp%2Fauth_callback&scope=openid&state=s&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&resource=https%3A%2F%2Fdibibest.codecora.dev%2Fmcp"
+```
+
+Connect in Claude with **Settings → Connectors → Add custom connector**, URL
+`https://dibibest.codecora.dev/mcp`, then sign in with CodeCora ID.
 
 ## Limits and cost (Cloudflare, checked 2026-11-05)
 
