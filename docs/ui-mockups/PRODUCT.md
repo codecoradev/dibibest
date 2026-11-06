@@ -1,34 +1,35 @@
-# PRODUCT.md — codename `erdhub` (nama final = keputusan owner)
+# PRODUCT.md — codename `erdhub` (final name = owner's decision)
 
 ## What this product is
-Bidirectional database schema tool: **dbdiagram + Liam ERD jadi satu, semua format bolak-balik.**
-Satu IR (intermediate representation) skema di tengah; format di sekelilingnya:
-DBML (dbdiagram) ↔ SQL DDL (PostgreSQL/MySQL/SQLite) ↔ Prisma schema ↔ ERD kanvas interaktif
-↔ live-DB introspect. Jualan utama = **round-trip fidelity**: konversi bolak-balik yang jujur,
-dengan laporan apa yang selamat dan apa yang bocor.
+Bidirectional database schema tool: **dbdiagram + Liam ERD in one, every format round-trips.**
+One schema IR (intermediate representation) in the middle; formats around it:
+DBML (dbdiagram) ↔ SQL DDL (PostgreSQL/MySQL/SQLite) ↔ Prisma schema ↔ interactive ERD canvas
+↔ live-DB introspect. Main selling point = **round-trip fidelity**: honest two-way conversion,
+with a report of what survived and what leaked.
 
 ## Who it is for
-Developer & data engineer yang hari ini pakai dbdiagram.io (tapi risi skema di cloud orang)
-atau Liam ERD (tapi frustasi satu arah). Butuh tool self-host, cepat, tanpa akun.
+Developers & data engineers who use dbdiagram.io today (but are uneasy keeping schemas in
+someone else's cloud) or Liam ERD (but are frustrated that it is one-way). They need a
+self-hosted, fast tool with no account.
 
 ## Mode (impeccable)
-**Operate** — pengguna menyelesaikan tugas (import → lihat → edit → export).
-Scanability, konsistensi, ekspektasi tool dev (mirip VS Code/dbdiagram) menang atas ekspresi.
-Brand hidup di presisi detail, bukan dekorasi.
+**Operate** — users complete tasks (import → view → edit → export).
+Scanability, consistency, and dev-tool expectations (VS Code/dbdiagram-like) win over expression.
+The brand lives in precision of detail, not decoration.
 
-## Platform & stack (mandat owner, tidak bisa dilanggar)
-- Core codec: Rust murni, in-process, compilable ke WASM + CLI.
-- UI: Svelte 5 + svelte-flow (kanvas), self-host web.
+## Platform & stack (owner mandate, non-negotiable)
+- Core codec: pure Rust, in-process, compilable to WASM + CLI.
+- UI: Svelte 5 + svelte-flow (canvas), self-hosted web.
 - Metadata: SQLite. Monorepo, default branch `develop`.
 
-## Explicit brief from owner (22 Okt 2026, Discord #research)
-- "dbdiagram + liam itu sih dan bisa bolak balik juga" — round-trip adalah fitur inti, bukan bonus.
-- REA (morluto/rea) = alat riset SAJA, bukan komponen produk.
-- Stack Rust + Svelte "seperti biasanya".
+## Explicit brief from owner (22 Oct 2026, Discord #research)
+- "dbdiagram + Liam, and it should round-trip too" — round-trip is the core feature, not a bonus.
+- REA (morluto/rea) = research tool ONLY, not a product component.
+- Rust + Svelte stack "as usual".
 
-## ASSUMPTIONS (labeled — owner belum konfirmasi)
-- A1: Web-first desktop-class app (bukan desktop native) — infer dari pembandingan dbdiagram/Liam.
-- A2: Single-user local dulu; kolaborasi real-time = non-goal v1 — infer dari kompleksitas.
-- A3: Open-source MIT/Apache — infer dari pola produk fleet (belum diputuskan owner).
-- A4: Visual: dark-first tool aesthetic ala dev tool modern (VS Code/Liam vibes) — belum ada
-  brand direction resmi; mockup v1 pakai dark, eval di critique.
+## ASSUMPTIONS (labeled — not yet confirmed by owner)
+- A1: Web-first desktop-class app (not native desktop) — inferred from the dbdiagram/Liam comparison.
+- A2: Single-user local first; real-time collaboration = v1 non-goal — inferred from complexity.
+- A3: Open-source MIT/Apache — inferred from the fleet's product pattern (not yet decided by owner).
+- A4: Visual: dark-first tool aesthetic like modern dev tools (VS Code/Liam vibes) — no official
+  brand direction yet; mockup v1 uses dark, evaluated in critique.

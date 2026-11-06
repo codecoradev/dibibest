@@ -1,6 +1,6 @@
 [package]
 name = "dibibest-cli"
-description = "dibibest CLI — convert schemas bolak-balik: DBML ↔ SQL ↔ ERD"
+description = "dibibest CLI — convert schemas in both directions: DBML ↔ SQL ↔ ERD"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

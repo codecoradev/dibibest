@@ -303,7 +303,7 @@ cat schema.sql | dibibest convert --to prisma`;
 		<span class="flinks">
 			<a href={REPO}>GitHub</a>
 			<a href="{REPO}/issues/new">Report a bug</a>
-			<a href="{REPO}#keterbatasan-beta">Beta limits</a>
+			<a href="{REPO}#beta-limitations">Beta limits</a>
 		</span>
 	</footer>
 </div>
