@@ -30,6 +30,30 @@
 	let showFidelity = $state(false);
 	let showExport = $state(false);
 	let showProjects = $state(false);
+	let projectsEl = $state<HTMLElement>();
+	let exportEl = $state<HTMLElement>();
+	let chipEl = $state<HTMLElement>();
+	let fidelityEl = $state<HTMLElement>();
+
+	/** A click or tap anywhere outside an open popup closes it (its own toggle button excluded). */
+	function dismissOutside(e: PointerEvent) {
+		const t = e.target as Node;
+		if (showProjects && !projectsEl?.contains(t)) showProjects = false;
+		if (showExport && !exportEl?.contains(t)) showExport = false;
+		if (showFidelity && !fidelityEl?.contains(t) && !chipEl?.contains(t)) showFidelity = false;
+	}
+	function dismissKey(e: KeyboardEvent) {
+		if (e.key !== 'Escape' || !(showProjects || showExport || showFidelity)) return;
+		showProjects = showExport = showFidelity = false;
+	}
+	/** One popup at a time: opening one closes the others. */
+	function toggle(which: 'projects' | 'export' | 'fidelity') {
+		const open = { projects: showProjects, export: showExport, fidelity: showFidelity }[which];
+		showProjects = showExport = showFidelity = false;
+		if (which === 'projects') showProjects = !open;
+		else if (which === 'export') showExport = !open;
+		else showFidelity = !open;
+	}
 	let copied = $state<string | null>(null);
 	let notice = $state<string | null>(null);
 	let fileInput: HTMLInputElement;
@@ -124,16 +148,18 @@
 	}
 </script>
 
+<svelte:window onpointerdown={dismissOutside} onkeydown={dismissKey} />
+
 <header class="topbar">
 	<div class="brand">
 		<Logo size={22} /> <span class="name">dibibest</span>
-		<div class="projects">
+		<div class="projects" bind:this={projectsEl}>
 			<button
 				class="project-name"
 				aria-haspopup="menu"
 				aria-expanded={showProjects}
 				aria-label="Projects: {ws.projectName}"
-				onclick={() => (showProjects = !showProjects)}>/ {ws.projectName} ▾</button
+				onclick={() => toggle('projects')}>/ {ws.projectName} ▾</button
 			>
 			{#if showProjects}
 				<div class="menu left" role="menu" aria-label="Projects">
@@ -184,15 +210,16 @@
 	<div class="spacer"></div>
 	{#if chip}
 		<button
+			bind:this={chipEl}
 			class="chip"
 			class:lossy={!chip.lossless}
 			aria-expanded={showFidelity}
 			aria-label={chip.text}
-			onclick={() => (showFidelity = !showFidelity)}>◈ <span class="long">{chip.text}</span><span class="short">{chip.short}</span></button
+			onclick={() => toggle('fidelity')}>◈ <span class="long">{chip.text}</span><span class="short">{chip.short}</span></button
 		>
 	{/if}
-	<div class="export">
-		<button class="btn-primary" aria-expanded={showExport} onclick={() => (showExport = !showExport)}>
+	<div class="export" bind:this={exportEl}>
+		<button class="btn-primary" aria-expanded={showExport} onclick={() => toggle('export')}>
 			{copied ? `Copied ${copied} ✓` : 'Export ▾'}
 		</button>
 		{#if showExport}
@@ -227,7 +254,7 @@
 			<button class="link" onclick={() => auth.signIn('/app')}>Sign in</button>
 		{/if}
 	{/if}
-	{#if showFidelity}<FidelityPanel />{/if}
+	{#if showFidelity}<div class="fidelity-wrap" bind:this={fidelityEl}><FidelityPanel /></div>{/if}
 	{#if notice}<div class="notice" role="status">{notice}</div>{/if}
 </header>
 
@@ -269,6 +296,9 @@
 	}
 	.save.warn {
 		color: var(--warn);
+	}
+	.fidelity-wrap {
+		display: contents;
 	}
 	.menu.left {
 		left: 0;
