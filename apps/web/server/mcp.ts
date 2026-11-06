@@ -314,7 +314,10 @@ async function serve(req: Request, env: Env, core: Core, fetcher: Fetch): Promis
 
 	const auth = req.headers.get('authorization') ?? '';
 	const m = /^Bearer\s+([A-Za-z0-9._~+/=-]+)$/i.exec(auth.trim());
-	if (!m) return unauthorized(req);
+	if (!m) {
+		console.log(`mcp: 401 no bearer ua=${(req.headers.get('user-agent') ?? '').slice(0, 40)}`);
+		return unauthorized(req);
+	}
 	let jwksUri: string | undefined;
 	try {
 		jwksUri = (await discover(issuer, fetcher)).jwks_uri;
@@ -353,6 +356,14 @@ async function serve(req: Request, env: Env, core: Core, fetcher: Fetch): Promis
 	}
 	const rpc = msg as RpcMessage;
 	// notifications (no id) and client responses get no body
+	// who is calling and how (no token, no body): the connector handshake is
+	// then readable in the real-time logs
+	console.log(
+		`mcp: <- ${typeof rpc.method === 'string' ? rpc.method : rpc.id !== undefined ? '(response)' : '?'}` +
+			` ua=${(req.headers.get('user-agent') ?? '').slice(0, 40)}` +
+			` pv=${req.headers.get('mcp-protocol-version') ?? '-'} mm=${req.headers.get('mcp-method') ?? '-'}` +
+			` accept=${(req.headers.get('accept') ?? '-').slice(0, 60)}`
+	);
 	if (rpc.method === undefined || rpc.id === undefined) return new Response(null, { status: 202 });
 	if (typeof rpc.method !== 'string') return json(rpcError(rpc.id ?? null, -32600, 'invalid request'), 400);
 	// Era selection, as uteke-cloud does (#70): `initialize` = legacy handshake;
