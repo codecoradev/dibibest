@@ -1,4 +1,4 @@
-//! dibibest — convert database schemas bolak-balik.
+//! dibibest — convert database schemas in both directions.
 //!
 //! `dibibest convert` reads DBML/SQL/Prisma/ERD-JSON, emits any of them (ERD-JSON for the
 //! canvas), and always prints a fidelity report: what survived, what dropped.
