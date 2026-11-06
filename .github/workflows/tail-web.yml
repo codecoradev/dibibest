@@ -33,6 +33,12 @@ jobs:
         run: |
           case "$MINUTES" in ''|*[!0-9]*) echo "::error::minutes must be a number"; exit 1;; esac
           [ "$MINUTES" -ge 1 ] && [ "$MINUTES" -le 15 ] || { echo "::error::minutes must be 1-15"; exit 1; }
-          echo "tailing for ${MINUTES}m: reconnect the connector now"
-          timeout "${MINUTES}m" npx --yes wrangler@4 pages deployment tail \
-            --project-name dibibest --environment production --format pretty || [ $? -eq 124 ]
+          # wrangler needs a deployment id in non-interactive mode: take the
+          # newest production deployment
+          DEPLOYMENT=$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/dibibest/deployments?env=production&per_page=1" \
+            | jq -r '.result[0].id')
+          [ -n "$DEPLOYMENT" ] && [ "$DEPLOYMENT" != null ] || { echo "::error::no production deployment found"; exit 1; }
+          echo "tailing deployment $DEPLOYMENT for ${MINUTES}m: reconnect the connector now"
+          timeout "${MINUTES}m" npx --yes wrangler@4 pages deployment tail "$DEPLOYMENT" \
+            --project-name dibibest --format pretty || [ $? -eq 124 ]
