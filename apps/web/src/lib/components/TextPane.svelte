@@ -7,6 +7,13 @@
 	// editable: text-first input pane. Otherwise: generated, read-only output (canvas-first).
 	let { editable }: { editable: boolean } = $props();
 
+	let editor: { beautify(): boolean } | undefined = $state();
+	let formatted = $state<'idle' | 'done' | 'tidy'>('idle');
+	function tidy() {
+		formatted = editor?.beautify() ? 'done' : 'tidy';
+		setTimeout(() => (formatted = 'idle'), 1400);
+	}
+
 	let copied = $state(false);
 	async function doCopy() {
 		// copying out of the workspace needs sign-in, like import and download
@@ -20,12 +27,17 @@
 	<div class="title">
 		<span>{editable ? '' : 'generated '}schema.{ws.format}</span>
 		{#if editable}
-			<span class="state live">● autosync {Math.round(ws.parseMs)}ms</span>
+			<span class="right">
+				<button class="copy" title="Tidy indentation and blank lines (Shift+Alt+F)" onclick={tidy}
+					>{formatted === 'done' ? 'Formatted ✓' : formatted === 'tidy' ? 'Already tidy' : 'Format'}</button
+				>
+				<span class="state live">● autosync {Math.round(ws.parseMs)}ms</span>
+			</span>
 		{:else}
 			<button class="copy" onclick={doCopy}>{copied ? 'Copied ✓' : auth.mayTransfer ? 'Copy' : 'Sign in to copy'}</button>
 		{/if}
 	</div>
-	<Editor value={ws.text} readonly={!editable} label="{ws.format} source" onchange={(v) => ws.setText(v)} />
+	<Editor bind:this={editor} value={ws.text} readonly={!editable} format={ws.format} label="{ws.format} source" onchange={(v) => ws.setText(v)} />
 	<div class="foot">
 		{#if ws.error}
 			<span class="bad">✗ {ws.error}</span>
@@ -66,6 +78,11 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+	}
+	.right {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-3);
 	}
 	.state {
 		text-transform: none;

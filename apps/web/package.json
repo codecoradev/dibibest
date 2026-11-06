@@ -9,7 +9,7 @@
     "build": "sh scripts/wasm.sh && vite build",
     "preview": "vite preview --port 4173 --strictPort",
     "check": "sh scripts/wasm.sh && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json",
-		"test:server": "bun test server",
+    "test:server": "bun test server",
     "test:smoke": "sh scripts/wasm.sh && vite build && playwright test"
   },
   "devDependencies": {
@@ -24,6 +24,7 @@
     "vite": "^8.3.5"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.4",
     "@codemirror/commands": "^6.11.1",
     "@codemirror/language": "^6.13.1",
     "@codemirror/state": "^6.7.6",
