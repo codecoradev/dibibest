@@ -210,7 +210,7 @@ describe('protocol', () => {
 
 	test('tools/list matches the stdio server', async () => {
 		const { body } = await rpc('tools/list', {});
-		expect(body.result.tools.map((t: { name: string }) => t.name)).toEqual(['convert_schema', 'list_formats']);
+		expect(body.result.tools.map((t: { name: string }) => t.name)).toEqual(['convert_schema', 'render_diagram', 'list_formats']);
 	});
 
 	test('list_formats comes from the core registry', async () => {
@@ -228,6 +228,23 @@ describe('protocol', () => {
 		expect(body.result.content[0].text).toContain('CREATE TABLE users');
 		expect(body.result.content[0].text).toContain('-- fidelity --\ntables 1/1  columns 2/2');
 		expect(body.result.structuredContent.fidelity.idempotent).toBe(true);
+	});
+
+	test('render_diagram draws the ERD with the real core', async () => {
+		const { body } = await rpc('tools/call', {
+			name: 'render_diagram',
+			arguments: { source: 'Table users {\n  id integer [pk]\n}\nTable posts {\n  user_id integer\n}\nRef: posts.user_id > users.id\n', theme: 'light' }
+		});
+		expect(body.result.isError).toBe(false);
+		const svg: string = body.result.content[0].text;
+		expect(svg.startsWith('<svg xmlns="http://www.w3.org/2000/svg"')).toBe(true);
+		expect(svg).toContain('>users<');
+		expect(svg).toContain('marker-end');
+		expect(body.result.structuredContent.width).toBeGreaterThan(0);
+		const bad = await rpc('tools/call', { name: 'render_diagram', arguments: { source: 'x', theme: 'pink' } });
+		expect(bad.body.result.isError).toBe(true);
+		const undetectable = await rpc('tools/call', { name: 'render_diagram', arguments: { source: 'hello' } });
+		expect(undetectable.body.result.isError).toBe(true);
 	});
 
 	test('conversion errors are tool errors, not transport errors', async () => {

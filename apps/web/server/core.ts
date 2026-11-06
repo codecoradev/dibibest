@@ -19,7 +19,7 @@ export type Fidelity = {
 };
 
 export type CoreReply =
-	| { ok: true; output?: string; fidelity?: Fidelity; from?: string; formats?: string[] }
+	| { ok: true; output?: string; fidelity?: Fidelity; from?: string; formats?: string[]; svg?: string; width?: number; height?: number }
 	| { ok: false; error: string };
 
 export type Core = (req: Record<string, unknown>) => Promise<CoreReply>;

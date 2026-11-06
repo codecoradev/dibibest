@@ -52,7 +52,7 @@ fn tools_list_shape() {
     let r = one("tools/list", json!({}));
     let tools = r["result"]["tools"].as_array().unwrap();
     let names: Vec<_> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["convert_schema", "list_formats"]);
+    assert_eq!(names, ["convert_schema", "render_diagram", "list_formats"]);
     for t in tools {
         assert!(t["description"].is_string());
         assert_eq!(t["inputSchema"]["type"], "object");
@@ -139,4 +139,36 @@ fn notifications_get_no_reply() {
     ]);
     assert_eq!(replies.len(), 1);
     assert_eq!(replies[0]["id"], 2);
+}
+
+#[test]
+fn render_diagram_returns_svg() {
+    let r = one(
+        "tools/call",
+        json!({"name": "render_diagram", "arguments": {
+            "source": "Table a {\n  id integer [pk]\n}\nTable b {\n  a_id integer\n}\nRef: b.a_id > a.id\n",
+            "theme": "light"
+        }}),
+    );
+    let res = &r["result"];
+    assert_eq!(res["isError"], false);
+    let svg = res["content"][0]["text"].as_str().unwrap();
+    assert!(svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""));
+    assert!(svg.contains(">a_id<") && svg.contains("marker-end"));
+    assert_eq!(res["structuredContent"]["svg"], svg);
+    assert!(res["structuredContent"]["width"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn render_diagram_errors_are_tool_errors() {
+    for args in [
+        json!({"source": "hello"}),
+        json!({"source": "Table a { id int }", "theme": "pink"}),
+    ] {
+        let r = one(
+            "tools/call",
+            json!({"name": "render_diagram", "arguments": args}),
+        );
+        assert_eq!(r["result"]["isError"], true, "{args}");
+    }
 }

@@ -5,6 +5,7 @@
 //! surface used here is small and stability matters more than features.
 //! Roadmap (R5): resources/list for schema previews, official conformance run.
 
+use dibibest_core::diagram::{render_source, RenderOptions, Theme};
 use dibibest_core::{detect_format, FormatId, Registry};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
@@ -74,6 +75,20 @@ fn handle(method: &str, params: Option<&Value>, registry: &Registry) -> Option<V
                 }
             },
             {
+                "name": "render_diagram",
+                "title": "Render the ERD as SVG",
+                "description": "Draw the entity-relationship diagram of a schema as a standalone SVG image (tables, columns with PK/FK, relations). Returns the SVG markup; save it as a .svg file or embed it.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "source": { "type": "string", "description": "Schema source text (DBML, SQL DDL, Prisma schema or ERD-JSON)" },
+                        "from": { "type": "string", "description": "Source format id; auto-detected when omitted", "enum": ["dbml", "sql", "sql:mysql", "sql:sqlite", "prisma", "erdjson"] },
+                        "theme": { "type": "string", "description": "Colour scheme (default dark)", "enum": ["dark", "light"] }
+                    },
+                    "required": ["source"]
+                }
+            },
+            {
                 "name": "list_formats",
                 "title": "List supported formats",
                 "description": "List format ids the server can convert between, including SQL dialects (sql = PostgreSQL, sql:mysql, sql:sqlite).",
@@ -94,6 +109,32 @@ fn tool_call(name: &str, args: &Value, registry: &Registry) -> Value {
     match name {
         "list_formats" => {
             json!({ "content": [{ "type": "text", "text": registry.ids().join("\n") }] })
+        }
+        "render_diagram" => {
+            let src = args.get("source").and_then(|s| s.as_str()).unwrap_or("");
+            let from = args.get("from").and_then(|s| s.as_str());
+            let theme = match args.get("theme").and_then(|s| s.as_str()) {
+                None => Some(Theme::Dark),
+                Some(t) => Theme::parse(t),
+            };
+            let Some(theme) = theme else {
+                return json!({ "content": [{ "type": "text", "text": "error: `theme` must be dark or light" }], "isError": true });
+            };
+            let opts = RenderOptions {
+                theme,
+                ..Default::default()
+            };
+            match render_source(src, from, &opts) {
+                Ok(svg) => json!({
+                    "content": [{ "type": "text", "text": svg.svg }],
+                    "structuredContent": svg,
+                    "isError": false
+                }),
+                Err(e) => json!({
+                    "content": [{ "type": "text", "text": format!("error[{}]: {e}", e.code()) }],
+                    "isError": true
+                }),
+            }
         }
         "convert_schema" => {
             let src = args.get("source").and_then(|s| s.as_str()).unwrap_or("");

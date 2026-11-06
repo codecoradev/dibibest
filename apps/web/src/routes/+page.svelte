@@ -277,8 +277,9 @@ cat schema.sql | dibibest convert --to prisma`;
 			<p class="kicker">For AI agents</p>
 			<h2>An MCP server your agent can call.</h2>
 			<p>
-				<code>convert_schema</code> and <code>list_formats</code> return the converted text along with the
-				fidelity report, so an agent can see what got lost. Run it locally with no auth, or use the hosted
+				<code>convert_schema</code> returns the converted text along with the
+				fidelity report, so an agent can see what got lost, and <code>render_diagram</code> draws the ERD as SVG.
+				Run it locally with no auth, or use the hosted
 				endpoint with OAuth sign-in (no API keys).
 			</p>
 		</div>

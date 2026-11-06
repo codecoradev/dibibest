@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
   "name": "io.github.codecoradev/dibibest",
   "title": "dibibest — bidirectional schema conversion",
-  "description": "Convert database schemas bolak-balik (DBML ↔ SQL DDL) with fidelity reporting: every conversion reports what survived and whether the round-trip is lossless.",
+  "description": "Convert database schemas bolak-balik (DBML, SQL, Prisma, ERD-JSON) with fidelity reporting, and render the ERD as SVG.",
   "websiteUrl": "https://github.com/codecoradev/dibibest",
   "repository": {
     "url": "https://github.com/codecoradev/dibibest",
