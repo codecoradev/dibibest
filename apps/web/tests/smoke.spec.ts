@@ -276,3 +276,45 @@ test('a column or table declared twice shows a parse error instead of crashing t
 	await expect(nodes).toHaveCount(2);
 	expect(crashes).toEqual([]);
 });
+
+test('a project saved with duplicate columns by an older build opens instead of 500', async ({ page }) => {
+	const crashes: string[] = [];
+	page.on('pageerror', (e) => crashes.push(e.message));
+	await page.goto('/app');
+	await expect(page.locator('.svelte-flow__node-table')).toHaveCount(2);
+	// what an older build stored: the pasted copy left z.id twice in text and diagram
+	await page.evaluate(
+		() =>
+			new Promise<void>((resolve, reject) => {
+				const col = (name: string) => ({ name, type: 'int', isPk: false, isFk: false, isUnique: false, isNullable: true });
+				const req = indexedDB.open('dibibest', 1);
+				req.onsuccess = () => {
+					const tx = req.result.transaction('projects', 'readwrite');
+					tx.objectStore('projects').put({
+						id: 'broken',
+						name: 'broken',
+						format: 'dbml',
+						text: 'Table z {\n  id int\n  id int\n}\n',
+						erd: {
+							version: 1,
+							nodes: [{ id: 'z', name: 'z', position: { x: 0, y: 0 }, columns: [col('id'), col('id')] }],
+							edges: [],
+							meta: { layout: null }
+						},
+						updatedAt: Date.now() + 1000
+					});
+					tx.oncomplete = () => {
+						localStorage.setItem('dibibest:last-project', 'broken');
+						resolve();
+					};
+					tx.onerror = () => reject(tx.error);
+				};
+				req.onerror = () => reject(req.error);
+			})
+	);
+	await page.reload();
+	await expect(page.getByText(/duplicate column `z\.id`/).first()).toBeVisible();
+	await expect(page.getByText('Internal Error')).toHaveCount(0);
+	await expect(page.locator('.svelte-flow__node-table')).toHaveCount(1);
+	expect(crashes).toEqual([]);
+});
