@@ -166,9 +166,31 @@ describe('transport', () => {
 		expect(res.status).toBe(405);
 	});
 
-	test('foreign Origin → 403', async () => {
-		const res = await handleMcp(post({ jsonrpc: '2.0', id: 1, method: 'ping' }, { origin: 'https://evil.example', authorization: `Bearer ${await jwt()}` }), ENV, core, fetcher);
-		expect(res.status).toBe(403);
+	test('browser origins (claude.ai) get CORS, not a 403; the token still decides', async () => {
+		const origin = { origin: 'https://claude.ai' };
+		// no token: 401, readable cross-origin (WWW-Authenticate exposed)
+		const anon = await handleMcp(post({ jsonrpc: '2.0', id: 1, method: 'initialize' }, origin), ENV, core, fetcher);
+		expect(anon.status).toBe(401);
+		expect(anon.headers.get('access-control-allow-origin')).toBe('https://claude.ai');
+		expect(anon.headers.get('access-control-expose-headers')).toContain('www-authenticate');
+		expect(anon.headers.get('www-authenticate')).toContain('resource_metadata=');
+		// with a token: served
+		const ok = await handleMcp(post({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, { ...origin, authorization: `Bearer ${await jwt()}` }), ENV, core, fetcher);
+		expect(ok.status).toBe(200);
+		expect(ok.headers.get('access-control-allow-origin')).toBe('https://claude.ai');
+		// preflight
+		const pre = await handleMcp(
+			new Request(RESOURCE, { method: 'OPTIONS', headers: { ...origin, 'access-control-request-method': 'POST' } }),
+			ENV,
+			core,
+			fetcher
+		);
+		expect(pre.status).toBe(204);
+		expect(pre.headers.get('access-control-allow-headers')).toContain('authorization');
+		expect(pre.headers.get('access-control-allow-headers')).toContain('mcp-protocol-version');
+		// same-origin / server-side callers get no CORS headers
+		const plain = await handleMcp(post({ jsonrpc: '2.0', id: 1, method: 'ping' }), ENV, core, fetcher);
+		expect(plain.headers.get('access-control-allow-origin')).toBeNull();
 	});
 
 	test('notification → 202 without a body', async () => {
