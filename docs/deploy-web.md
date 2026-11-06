@@ -91,8 +91,14 @@ running the core compiled to WASM inside a Pages Function. Client config:
   refused because the proof is not checked). Opaque tokens are refused.
 - **Transport:** stateless, JSON responses only (no SSE stream, no
   `Mcp-Session-Id`); `GET` answers 405. Protocol versions 2025-11-25,
-  2025-06-18 and 2025-03-26. Requests from a foreign browser `Origin` are
+  2025-06-18 and 2025-03-26, negotiated in `initialize`. The
+  `MCP-Protocol-Version` header is not gated. Claude opens with
+  `server/discover` (MCP 2026-07-28), gets JSON-RPC -32601 with HTTP 200, and
+  falls back to `initialize`. Requests from a foreign browser `Origin` are
   refused. Bodies over 512 KB get 413.
+- **Logs:** each call logs `mcp: <method>`, and refused tokens log the reason
+  (never the token). See Workers & Pages → dibibest → Functions → Real-time
+  logs.
 - **Enabled** whenever `OIDC_ISSUER` is set (no client secret is needed: this
   is a resource server). It answers 401 to everyone until Gatehouse issues
   tokens for the resource (owner step below).
