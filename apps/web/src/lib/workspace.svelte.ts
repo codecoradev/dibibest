@@ -367,6 +367,8 @@ class Workspace {
 
 	renameColumn(table: string, from: string, to: string) {
 		if (!this.erd || !to || to === from) return;
+		// a name already used in this table would make two columns one (and crash the keyed canvas list)
+		if (this.erd.nodes.find((n) => n.id === table)?.columns.some((c) => c.name === to)) return;
 		const rn = (t: string, c: string) => (t === table && c === from ? to : c);
 		return this.commit({
 			...this.erd,

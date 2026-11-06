@@ -261,3 +261,18 @@ test('dbdiagram sample with optional refs: no error, three refs, no overlapping 
 			expect(overlap, `tables ${i} and ${j} overlap`).toBe(false);
 		}
 });
+
+test('a column or table declared twice shows a parse error instead of crashing the page', async ({ page }) => {
+	const crashes: string[] = [];
+	page.on('pageerror', (e) => crashes.push(e.message));
+	await page.goto('/app');
+	const nodes = page.locator('.svelte-flow__node-table');
+	await expect(nodes).toHaveCount(2);
+	await page.getByRole('textbox', { name: 'dbml source' }).click();
+	await page.keyboard.press('ControlOrMeta+End');
+	await page.keyboard.insertText('\nTable z {\n  id int\n  id int\n}\n');
+	await expect(page.getByText(/duplicate column `z\.id`/).first()).toBeVisible();
+	await expect(page.getByText('Internal Error')).toHaveCount(0);
+	await expect(nodes).toHaveCount(2);
+	expect(crashes).toEqual([]);
+});

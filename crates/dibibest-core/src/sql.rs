@@ -83,7 +83,7 @@ impl Codec for SqlCodec {
         Some(crate::scan::sql(src))
     }
 
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         match self.dialect {
             Dialect::Postgres => "sql",
             Dialect::MySql => "sql:mysql",

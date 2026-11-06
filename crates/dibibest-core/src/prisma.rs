@@ -25,7 +25,7 @@ impl Codec for PrismaCodec {
         Some(crate::scan::prisma(src))
     }
 
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "prisma"
     }
 
