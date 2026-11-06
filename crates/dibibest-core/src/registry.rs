@@ -200,7 +200,7 @@ impl Registry {
     }
 
     /// Idempotency: parse(emit(parse(src))) in the SOURCE format must equal the
-    /// first IR. This is the "bolak-balik" promise, measured on every conversion.
+    /// first IR. This is the round-trip promise, measured on every conversion.
     fn check_idempotent(&self, from: &FormatId, first_ir: &SchemaIR) -> bool {
         let codec = match self.codec(from) {
             Ok(c) => c,

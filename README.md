@@ -2,39 +2,39 @@
 
 # dibibest
 
-**Convert database schemas bolak-balik**: DBML (dbdiagram.io) ⇄ SQL DDL
-(PostgreSQL, MySQL, SQLite) ⇄ Prisma ⇄ ERD-JSON, dengan **laporan fidelity** di
-setiap konversi: apa yang selamat, apa yang bocor.
+**Convert database schemas in both directions**: DBML (dbdiagram.io) ⇄ SQL DDL
+(PostgreSQL, MySQL, SQLite) ⇄ Prisma ⇄ ERD-JSON, with a **fidelity report** on
+every conversion: what survived, what leaked.
 
-dbdiagram memberimu design-first; Liam ERD memberimu reverse-first. **dibibest
-memberimu keduanya dalam satu IR**, dan mengukur sendiri apakah bolak-baliknya
+dbdiagram gives you design-first; Liam ERD gives you reverse-first. **dibibest
+gives you both in one IR**, and measures for itself whether the round trip is
 lossless.
 
 ![dibibest workspace: DBML editor on the left, live ERD on the right, round-trip fidelity chip in the header](docs/screenshots/workspace-text-first.png)
 
-> **Status: beta.** Format inti sudah jalan dan diuji round-trip di CI, tapi masih
-> ada keterbatasan yang diketahui (lihat [di bawah](#keterbatasan-beta)). Kalau
-> konversimu salah atau laporan fidelity-nya bohong, itu bug:
-> [buka issue](https://github.com/codecoradev/dibibest/issues/new) dengan skema
-> kecil yang mereproduksinya.
+> **Status: beta.** The core formats work and are round-trip tested in CI, but
+> there are still known limitations (see [below](#beta-limitations)). If a
+> conversion is wrong or its fidelity report lies, that is a bug:
+> [open an issue](https://github.com/codecoradev/dibibest/issues/new) with a
+> small schema that reproduces it.
 
 ```bash
 # DBML → SQL (PostgreSQL)
 dibibest convert --to sql schema.dbml
 
-# SQL → DBML (format sumber dideteksi otomatis)
+# SQL → DBML (source format is auto-detected)
 cat schema.sql | dibibest convert --to dbml
 
-# dialek & format lain
+# other dialects & formats
 dibibest convert --to sql:mysql schema.dbml
 dibibest convert --to prisma schema.dbml
 dibibest formats            # dbml, sql, sql:mysql, sql:sqlite, prisma, erdjson
 
-# diagram ERD sebagai gambar SVG
+# ERD diagram as an SVG image
 dibibest render --theme light schema.sql > erd.svg
 ```
 
-Contoh nyata, DBML → SQL:
+A real example, DBML → SQL:
 
 ```dbml
 Table users {
@@ -65,7 +65,7 @@ CREATE TABLE orders (
 );
 ```
 
-Laporan fidelity (ke stderr, jadi output tetap bisa di-pipe):
+Fidelity report (on stderr, so the output stays pipeable):
 
 ```
 -- fidelity --
@@ -77,25 +77,25 @@ Laporan fidelity (ke stderr, jadi output tetap bisa di-pipe):
   note: notes/comments have no equivalent in target format
 ```
 
-## Kenapa fidelity report?
+## Why a fidelity report?
 
-Konversi schema itu jujur atau tidak. Tool lain diam-diam membuang partial index,
-enum, cascade, atau note. dibibest **selalu mengukur**:
+A schema conversion is either honest or it isn't. Other tools silently drop
+partial indexes, enums, cascades, or notes. dibibest **always measures**:
 
-- **kept/total per kategori.** Total dihitung dari teks sumber, tidak dari hasil
-  parse, sehingga sesuatu yang hilang saat parse tetap terlihat. Ref dicocokkan
-  per isi (tabel/kolom FK → tabel/kolom tujuan, plus `ON DELETE`/`ON UPDATE`),
-  bukan sekadar dihitung, jadi ref yang terbalik atau kehilangan cascade tidak
-  dianggap selamat.
-- **`dropped`:** apa yang tidak punya padanan di format tujuan, disebut namanya.
-- **Idempotensi:** `parse(emit(parse(src))) == parse(src)` di format sumber.
+- **kept/total per category.** Totals are counted from the source text, not from
+  the parse result, so anything lost during parsing still shows up. Refs are
+  matched by content (FK table/columns → target table/columns, plus
+  `ON DELETE`/`ON UPDATE`), not just counted, so a reversed ref or one that lost
+  its cascade is not counted as kept.
+- **`dropped`:** whatever has no equivalent in the target format, by name.
+- **Idempotency:** `parse(emit(parse(src))) == parse(src)` in the source format.
 
-"Bolak-balik" bukan slogan; itu test yang jalan di setiap konversi dan di CI,
-termasuk corpus 12 skema nyata yang dikonversi ke keenam format.
+"Round-trip" is not a slogan; it is a test that runs on every conversion and in
+CI, including a corpus of 12 real-world schemas converted to all six formats.
 
-## Coba sekarang
+## Try it now
 
-Belum ada binary rilis; untuk beta, build dari source (butuh
+There are no release binaries yet; for the beta, build from source (requires
 [Rust stable](https://rustup.rs)).
 
 ### CLI
@@ -105,7 +105,7 @@ cargo install --git https://github.com/codecoradev/dibibest dibibest-cli
 dibibest --help
 ```
 
-### MCP (untuk agen AI)
+### MCP (for AI agents)
 
 ```bash
 cargo install --git https://github.com/codecoradev/dibibest dibibest-mcp
@@ -115,8 +115,8 @@ cargo install --git https://github.com/codecoradev/dibibest dibibest-mcp
 { "mcpServers": { "dibibest": { "command": "dibibest-mcp" } } }
 ```
 
-Atau pakai server remote (tanpa install, login CodeCora ID lewat OAuth, tanpa
-API key) setelah versi hosted aktif:
+Or use the remote server (no install, CodeCora ID login via OAuth, no API key)
+once the hosted version is live:
 
 ```json
 { "mcpServers": { "dibibest": { "url": "https://dibibest.codecora.dev/mcp" } } }
@@ -125,85 +125,87 @@ API key) setelah versi hosted aktif:
 Tools:
 
 - `convert_schema` (`source`, `from?`, `to`) → output + fidelity
-- `render_diagram` (`source`, `from?`, `theme?` dark/light) → diagram ERD sebagai SVG
+- `render_diagram` (`source`, `from?`, `theme?` dark/light) → ERD diagram as SVG
 - `list_formats`
 
 Manifest: [server.json](server.json).
 
-### Web (ERD + editor, jalan sepenuhnya di browser)
+### Web (ERD + editor, runs entirely in the browser)
 
 ```bash
 rustup target add wasm32-unknown-unknown
 cd apps/web && bun install && bun run dev
 ```
 
-Tiga layout (text-first, canvas-first, explorer) di atas satu ERD-JSON; konversi
-jalan lewat core yang sama, dikompilasi ke WASM. Tidak ada upload.
+Three layouts (text-first, canvas-first, explorer) over a single ERD-JSON;
+conversions run through the same core, compiled to WASM. Nothing is uploaded.
 
-Proyek disimpan di browser (IndexedDB), tanpa akun dan tanpa server: buat,
-buka, ganti nama, dan hapus lewat menu nama proyek di kiri atas. **Import** file
-`.dbml`, `.sql`, `.prisma`, atau ERD-JSON (`.json`, posisi kanvas ikut) sebagai
-proyek baru; **Export → Download** menyimpan skema dalam format apa pun. Data
-proyek hanya ada di browser itu: pakai Download untuk cadangan atau pindah
-perangkat.
+Projects are stored in the browser (IndexedDB), with no account and no server:
+create, open, rename, and delete them from the project-name menu at the top
+left. **Import** a `.dbml`, `.sql`, `.prisma`, or ERD-JSON file (`.json`, canvas
+positions included) as a new project; **Export → Download** saves the schema in
+any format. Project data lives only in that browser: use Download for backups or
+to move to another device.
 
-| Laporan fidelity (klik chip "round-trip") | Explorer: cari & sembunyikan tabel di skema besar |
+| Fidelity report (click the "round-trip" chip) | Explorer: search & hide tables in large schemas |
 |---|---|
 | ![Fidelity report panel: kept/total for tables, columns, refs, indexes and round-trip idempotency](docs/screenshots/fidelity-panel.png) | ![Explorer layout: table list with search and visibility toggles next to the ERD canvas](docs/screenshots/explorer.png) |
 
-Versi hosted: **https://dibibest.codecora.dev** (Cloudflare Pages).
-Playground (edit, konversi, diagram, laporan fidelity) bebas dipakai tanpa akun;
-**Import**, **Copy**, dan **Download** meminta login dengan CodeCora ID. Login berjalan lewat Pages Functions tanpa database (cookie
-bertanda tangan). Setup dan deploy: [docs/deploy-web.md](docs/deploy-web.md).
+Hosted version: **https://dibibest.codecora.dev** (Cloudflare Pages).
+The playground (edit, convert, diagram, fidelity report) is free to use without
+an account; **Import**, **Copy**, and **Download** require signing in with
+CodeCora ID. Sign-in runs on Pages Functions with no database (signed cookies).
+Setup and deployment: [docs/deploy-web.md](docs/deploy-web.md).
 
 ## Format
 
-| Format | Parse | Emit | Catatan |
+| Format | Parse | Emit | Notes |
 |---|---|---|---|
-| DBML (dbdiagram) | ✓ | ✓ | Table/column + settings, indexes, Ref (`>` `<` `-`, opsional `?`, composite, inline, blocks, `delete`/`update`), Enum, Project. Lihat [docs/dbml-gaps.md](docs/dbml-gaps.md) |
-| SQL: PostgreSQL (`sql`) | ✓ | ✓ | via sqlparser-rs; `CREATE TABLE`/`INDEX`/`TYPE … AS ENUM`, FK + `ON DELETE`/`ON UPDATE`. Autoincrement belum ditulis (lihat bawah) |
-| SQL: MySQL (`sql:mysql`) | ✓ | ✓ | backtick quoting, `AUTO_INCREMENT`; enum tidak ditulis (dilaporkan `dropped`). Lihat [docs/sql-dialects.md](docs/sql-dialects.md) |
-| SQL: SQLite (`sql:sqlite`) | ✓ | ✓ | `AUTOINCREMENT`; enum tidak ditulis (dilaporkan `dropped`) |
-| Prisma | ✓ | ✓ | subset, ditulis tangan: models, fields, `@id`/`@unique`/`@default`, `@relation` (+ `onDelete`/`onUpdate`), enums. Lihat [docs/prisma-integration.md](docs/prisma-integration.md) |
-| ERD-JSON | ✓ | ✓ | kontrak kanvas: [docs/erdjson-schema.md](docs/erdjson-schema.md) |
+| DBML (dbdiagram) | ✓ | ✓ | Table/column + settings, indexes, Ref (`>` `<` `-`, optional `?`, composite, inline, blocks, `delete`/`update`), Enum, Project. See [docs/dbml-gaps.md](docs/dbml-gaps.md) |
+| SQL: PostgreSQL (`sql`) | ✓ | ✓ | via sqlparser-rs; `CREATE TABLE`/`INDEX`/`TYPE … AS ENUM`, FK + `ON DELETE`/`ON UPDATE`. Autoincrement not emitted yet (see below) |
+| SQL: MySQL (`sql:mysql`) | ✓ | ✓ | backtick quoting, `AUTO_INCREMENT`; enums not emitted (reported as `dropped`). See [docs/sql-dialects.md](docs/sql-dialects.md) |
+| SQL: SQLite (`sql:sqlite`) | ✓ | ✓ | `AUTOINCREMENT`; enums not emitted (reported as `dropped`) |
+| Prisma | ✓ | ✓ | hand-written subset: models, fields, `@id`/`@unique`/`@default`, `@relation` (+ `onDelete`/`onUpdate`), enums. See [docs/prisma-integration.md](docs/prisma-integration.md) |
+| ERD-JSON | ✓ | ✓ | canvas contract: [docs/erdjson-schema.md](docs/erdjson-schema.md) |
 | Live-DB introspect | – | – | roadmap |
 
-## Keterbatasan beta
+## Beta limitations
 
-Yang **ditolak dengan error** (tidak pernah dibuang diam-diam) di DBML:
-`TableGroup`, alias tabel (`Table users as U`), blok `Note { … }`, note
-multi-baris (`'''…'''`), relasi many-to-many (`<>`), `checks`, `TablePartial`,
-dan `Records`.
+**Rejected with an error** (never silently dropped) in DBML: `TableGroup`,
+table aliases (`Table users as U`), `Note { … }` blocks, multi-line notes
+(`'''…'''`), many-to-many relations (`<>`), `checks`, `TablePartial`, and
+`Records`.
 
-Yang diketahui belum didukung:
+Known to be unsupported:
 
 - **Expression/partial index** (`` (`lower(email)`) ``, `` (`fired_at WHERE resolved = false`) ``)
-  ditulis ke PostgreSQL dan SQLite (`((lower(email)))`, `… WHERE …`), tapi MySQL
-  dan Prisma tidak punya padanannya: index itu dibuang dan disebut di `dropped`.
-  Index tanpa kolom key (`` (`WHERE …`) ``) tidak bisa ditulis ke SQL sama sekali.
-- **Autoincrement ke PostgreSQL** belum ditulis (`SERIAL`/`IDENTITY`); MySQL dan
-  SQLite sudah. Lihat [docs/sql-dialects.md](docs/sql-dialects.md).
+  are emitted to PostgreSQL and SQLite (`((lower(email)))`, `… WHERE …`), but
+  MySQL and Prisma have no equivalent: such an index is dropped and named in
+  `dropped`. An index with no key column (`` (`WHERE …`) ``) cannot be emitted
+  to SQL at all.
+- **Autoincrement to PostgreSQL** is not emitted yet (`SERIAL`/`IDENTITY`);
+  MySQL and SQLite already are. See [docs/sql-dialects.md](docs/sql-dialects.md).
 
-Yang berubah bentuk tapi tetap round-trip (kanonikalisasi):
+Changes shape but still round-trips (canonicalization):
 
-- Komentar `//` di DBML dibuang.
-- Ref inline dipindah ke baris `Ref:` sendiri.
-- Urutan setting dinormalkan.
+- DBML `//` comments are dropped.
+- Inline refs are moved to their own `Ref:` line.
+- Setting order is normalized.
 
-Rincian lengkap ada di [docs/dbml-gaps.md](docs/dbml-gaps.md). Progres menuju
-rilis beta pertama dilacak di
+Full details are in [docs/dbml-gaps.md](docs/dbml-gaps.md). Progress toward the
+first beta release is tracked in
 [#44](https://github.com/codecoradev/dibibest/issues/44).
 
 ## Development
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace          # round-trip conformance + corpus lintas format
+cargo test --workspace          # round-trip conformance + cross-format corpus
 cargo run -p dibibest-cli -- --help
 ```
 
-Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) · Arsitektur:
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Kontribusi:
+Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) · Architecture:
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Contributing:
 [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## License

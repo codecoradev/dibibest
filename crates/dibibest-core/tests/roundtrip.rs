@@ -1,4 +1,4 @@
-//! Round-trip conformance tests — the "bolak-balik" promise, enforced.
+//! Round-trip conformance tests — the round-trip promise, enforced.
 
 use dibibest_core::{detect_format, FormatId, Registry};
 

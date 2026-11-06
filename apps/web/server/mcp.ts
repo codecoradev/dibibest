@@ -44,7 +44,7 @@ export function handleProtectedResource(req: Request, env: Env): Response {
 			bearer_methods_supported: ['header'],
 			scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
 			resource_name: 'dibibest',
-			resource_documentation: 'https://github.com/codecoradev/dibibest#mcp-untuk-agen-ai'
+			resource_documentation: 'https://github.com/codecoradev/dibibest#mcp-for-ai-agents'
 		},
 		200,
 		{ 'access-control-allow-origin': '*', 'cache-control': 'public, max-age=3600' }
@@ -148,7 +148,7 @@ const rpcError = (id: RpcId, code: number, message: string) => ({ jsonrpc: '2.0'
 const TOOLS = [
 	{
 		name: 'convert_schema',
-		title: 'Convert schema bolak-balik',
+		title: 'Convert schema (round-trip)',
 		description:
 			'Convert a database schema between formats (dbml, sql, sql:mysql, sql:sqlite, prisma, erdjson; plain sql = PostgreSQL). Returns the converted output plus a fidelity report of what survived.',
 		inputSchema: {
