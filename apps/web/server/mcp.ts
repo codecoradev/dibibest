@@ -51,6 +51,43 @@ export function handleProtectedResource(req: Request, env: Env): Response {
 	);
 }
 
+let asCache: { issuer: string; doc: unknown; at: number } | undefined;
+
+/**
+ * GET /.well-known/oauth-authorization-server[/mcp] and /.well-known/openid-configuration
+ * on the MCP origin: the issuer's own metadata, unchanged (tokens carry the
+ * issuer's `iss`). uteke-cloud serves it there too (its #463); without it the
+ * SPA answered these paths with HTML and a 200 (#73).
+ */
+export async function handleAuthorizationServerMetadata(req: Request, env: Env, fetcher: Fetch = fetch): Promise<Response> {
+	const issuer = issuerOf(env);
+	if (!issuer) return NOT_CONFIGURED();
+	const path = new URL(req.url).pathname.replace(/\/+$/, '');
+	const suffix = path.replace(/^\/\.well-known\/(oauth-authorization-server|openid-configuration)/, '');
+	if (suffix !== '' && suffix !== MCP_PATH) return json({ error: 'not found' }, 404);
+	const fresh = asCache?.issuer === issuer && Date.now() - asCache.at < 300_000 ? asCache.doc : undefined;
+	let doc = fresh;
+	if (!doc) {
+		for (const url of [`${issuer}/.well-known/oauth-authorization-server`, `${issuer}/.well-known/openid-configuration`]) {
+			try {
+				const res = await fetcher(url, { headers: { accept: 'application/json' } });
+				if (!res.ok) continue;
+				const v = (await res.json()) as Record<string, unknown>;
+				if (typeof v.issuer === 'string' && typeof v.authorization_endpoint === 'string') {
+					doc = v;
+					asCache = { issuer, doc: v, at: Date.now() };
+					break;
+				}
+			} catch {
+				// try the next location
+			}
+		}
+	}
+	doc ??= asCache?.issuer === issuer ? asCache.doc : undefined; // stale beats nothing
+	if (!doc) return json({ error: 'authorization_server_unavailable' }, 502);
+	return json(doc, 200, { 'access-control-allow-origin': '*', 'cache-control': 'public, max-age=300' });
+}
+
 function unauthorized(req: Request, error?: string): Response {
 	const params = [`resource_metadata="${metadataUrlOf(req)}"`];
 	if (error) params.push(`error="${error}"`);
@@ -253,7 +290,8 @@ async function modern(req: Request, rpc: RpcMessage, version: string | undefined
 			};
 			break;
 		case 'tools/list':
-			result = { tools: TOOLS, ttlMs: TOOLS_TTL_MS, cacheScope: 'public' };
+			// private like uteke-cloud: the response belongs to an authorised caller
+			result = { tools: TOOLS, ttlMs: TOOLS_TTL_MS, cacheScope: 'private' };
 			break;
 		case 'tools/call': {
 			const args = params.arguments && typeof params.arguments === 'object' ? params.arguments : {};
