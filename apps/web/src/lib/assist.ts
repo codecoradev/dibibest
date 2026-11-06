@@ -58,22 +58,53 @@ function blockEnd(src: string, open: number, o: string, c: string): number {
 	return src.length;
 }
 
+// `text` without its comments: a `marker` comment runs to the end of the line, and block comments
+// are dropped too. Quoted text is kept as it is.
+function stripComments(text: string, marker: '--' | '//'): string {
+	let out = '';
+	let quote = '';
+	for (let i = 0; i < text.length; i++) {
+		const c = text[i];
+		if (quote) {
+			out += c;
+			if (c === '\\' && quote !== "'") out += text[++i] ?? '';
+			else if (c === quote) quote = '';
+		} else if (c === "'" || c === '"' || c === '`') {
+			quote = c;
+			out += c;
+		} else if (text.startsWith(marker, i)) {
+			while (i < text.length && text[i] !== '\n') i++;
+			i--; // keep the newline
+		} else if (text.startsWith('/*', i)) {
+			const end = text.indexOf('*/', i + 2);
+			i = end < 0 ? text.length : end + 1;
+			out += ' ';
+		} else out += c;
+	}
+	return out;
+}
+
 /** First word of every top-level entry of a `{ }` or `( )` body, split on lines or commas. */
-function firstWords(body: string, sep: '\n' | ',', skip: RegExp): string[] {
+function firstWords(body: string, sep: '\n' | ',', skip: RegExp, marker: '--' | '//'): string[] {
 	const out: string[] = [];
 	let depth = 0;
 	let piece = '';
 	const flush = () => {
 		const t = piece.trim();
 		piece = '';
-		if (!t || t.startsWith('//') || t.startsWith('--') || skip.test(t)) return;
+		if (!t || skip.test(t)) return;
 		const m = new RegExp(`^${NAME}`).exec(t);
 		if (m) out.push(unquote(m[1]));
 	};
-	for (const ch of body) {
-		if ('{(['.includes(ch)) depth++;
+	let quote = ''; // brackets and separators inside a quoted string (DEFAULT 'a, b') are text
+	for (const ch of stripComments(body, marker)) {
+		if (quote) {
+			if (ch === quote) quote = '';
+		} else if (ch === "'" || ch === '"' || ch === '`') {
+			quote = ch;
+		} else if ('{(['.includes(ch)) depth++;
 		else if ('})]'.includes(ch)) depth--;
-		if (ch === sep && depth === 0) flush();
+		if (ch === sep && depth === 0 && !quote) flush();
 		else piece += ch;
 	}
 	flush();
@@ -87,14 +118,14 @@ export function entities(src: string, format: string): Entities {
 		for (const m of src.matchAll(new RegExp(`\\bTable\\s+${NAME}(?:\\s+as\\s+\\w+)?\\s*\\{`, 'g'))) {
 			const open = m.index + m[0].length - 1;
 			const body = src.slice(open + 1, blockEnd(src, open, '{', '}'));
-			tables.set(unquote(m[1]), firstWords(body, '\n', /^(indexes\s*\{|note\s*:)/i));
+			tables.set(unquote(m[1]), firstWords(body, '\n', /^(indexes\s*\{|note\s*:)/i, '//'));
 		}
 		for (const m of src.matchAll(new RegExp(`\\bEnum\\s+${NAME}\\s*\\{`, 'g'))) enums.push(unquote(m[1]));
 	} else if (format === 'prisma') {
 		for (const m of src.matchAll(/\bmodel\s+(\w+)\s*\{/g)) {
 			const open = m.index + m[0].length - 1;
 			const body = src.slice(open + 1, blockEnd(src, open, '{', '}'));
-			tables.set(m[1], firstWords(body, '\n', /^@/));
+			tables.set(m[1], firstWords(body, '\n', /^@/, '//'));
 		}
 		for (const m of src.matchAll(/\benum\s+(\w+)\s*\{/g)) enums.push(m[1]);
 	} else {
@@ -102,7 +133,7 @@ export function entities(src: string, format: string): Entities {
 			const open = m.index + m[0].length - 1;
 			const body = src.slice(open + 1, blockEnd(src, open, '(', ')'));
 			const name = unquote(m[1].split('.').pop()!);
-			tables.set(name, firstWords(body, ',', /^(primary|foreign|unique|constraint|check|key|index|fulltext)\b/i));
+			tables.set(name, firstWords(body, ',', /^(primary|foreign|unique|constraint|check|key|index|fulltext)\b/i, '--'));
 		}
 		for (const m of src.matchAll(/\bCREATE\s+TYPE\s+((?:[\w"]+\.)?[\w"]+)\s+AS\s+ENUM/gi)) enums.push(unquote(m[1].split('.').pop()!));
 	}

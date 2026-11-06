@@ -64,6 +64,19 @@ test('SQL: types per dialect, tables after REFERENCES, columns inside its parent
 	expect(at('sql', 'CREATE TABLE p (\n  uid int REFERENCES users(id) ON DELETE ca|\n);')!.labels).toContain('CASCADE');
 });
 
+test('comments never hide a column or invent one', () => {
+	// SQL: a comment before a column shares its comma-separated piece; a comma inside a comment splits it
+	const sql = entities(
+		"CREATE TABLE t (\n  -- the key\n  id int, -- first, primary\n  /* a, b */\n  name text,\n  note text DEFAULT '--x, y'\n);",
+		'sql'
+	);
+	expect(sql.tables.get('t')).toEqual(['id', 'name', 'note']);
+	const dbml = entities('Table t {\n  // old: gone\n  id int // the id\n  /* x\n y */\n  name text\n}', 'dbml');
+	expect(dbml.tables.get('t')).toEqual(['id', 'name']);
+	const prisma = entities('model M {\n  // c\n  id Int @id // primary, key\n  name String\n}', 'prisma');
+	expect(prisma.tables.get('M')).toEqual(['id', 'name']);
+});
+
 test('Prisma: field types include the models and enums, attributes, defaults', () => {
 	const doc = 'enum Role {\n  A\n}\nmodel User {\n  id Int @id\n}\nmodel Post {\n  author Us|\n}';
 	const t = at('prisma', doc)!;
