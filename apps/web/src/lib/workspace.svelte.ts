@@ -3,6 +3,7 @@
 // is always what the core parsed.
 import { convert, renderSvg, toErd, type ErdDoc, type ErdNode, type Fidelity } from './core';
 import { svgToPng } from './diagram';
+import { placeNodes } from './layout';
 import {
 	deleteProject,
 	download,
@@ -268,9 +269,10 @@ class Workspace {
 			this.error = r.error;
 			return;
 		}
-		const prev = new Map(this.erd?.nodes.map((n) => [n.id, n.position]));
+		const prev = new Map(this.erd?.nodes.filter((n) => n.position).map((n) => [n.id, n.position]));
 		const doc: ErdDoc = JSON.parse(r.output);
-		for (const n of doc.nodes) n.position = prev.get(n.id) ?? n.position;
+		// tables already on the canvas stay; new ones go to a free cell (#75)
+		placeNodes(doc.nodes, prev);
 		this.erd = doc;
 		this.fidelity = r.fidelity;
 		this.parseMs = r.ms;

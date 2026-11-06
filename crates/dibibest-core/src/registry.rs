@@ -370,6 +370,27 @@ fn report_caps_gaps(ir: &SchemaIR, _from: &FormatId, to: &dyn Codec) -> Vec<Stri
             keyless.join(", ")
         ));
     }
+    let optional: Vec<String> = ir
+        .refs
+        .iter()
+        .filter(|r| r.optional_from || r.optional_to)
+        .map(|r| {
+            format!(
+                "{}.{} → {}.{}",
+                r.from_table,
+                r.from_cols.join(","),
+                r.to_table,
+                r.to_cols.join(",")
+            )
+        })
+        .collect();
+    if !optional.is_empty() && !caps.optional_refs {
+        gaps.push(format!(
+            "{} optional relationship marker(s) `?` dropped — no equivalent in target format (optionality is only implied by nullable columns): {}",
+            optional.len(),
+            optional.join(", ")
+        ));
+    }
     if has_enums && !caps.enums {
         gaps.push("enums have no equivalent in target format".into());
     }
@@ -478,6 +499,8 @@ mod tests {
             name: None,
             on_delete: None,
             on_update: None,
+            optional_from: false,
+            optional_to: false,
         }
     }
 

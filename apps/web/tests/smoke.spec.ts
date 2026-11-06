@@ -206,3 +206,58 @@ test.describe('phone', () => {
 		expect(await overflow()).toBeLessThanOrEqual(0);
 	});
 });
+
+test('dbdiagram sample with optional refs: no error, three refs, no overlapping tables (#75)', async ({ page }) => {
+	await page.goto('/app');
+	const nodes = page.locator('.svelte-flow__node-table');
+	await expect(nodes).toHaveCount(2);
+	const editor = page.getByRole('textbox', { name: 'dbml source' });
+	await editor.click();
+	await page.keyboard.press('ControlOrMeta+A');
+	await page.keyboard.press('Delete');
+	await page.keyboard.insertText(
+		[
+			'Table follows {',
+			'  following_user_id integer [not null]',
+			'  followed_user_id integer [not null]',
+			'  created_at timestamp',
+			'}',
+			'',
+			'Table users {',
+			'  id integer [primary key]',
+			'  username varchar',
+			'  role varchar',
+			'  created_at timestamp',
+			'}',
+			'',
+			'Table posts {',
+			'  id integer [primary key]',
+			'  title varchar',
+			"  body text [note: 'Content of the post']",
+			'  user_id integer [not null]',
+			'  status varchar',
+			'  created_at timestamp',
+			'}',
+			'',
+			'Ref user_posts: posts.user_id ?> users.id // many-to-one',
+			'',
+			'Ref: users.id <? follows.following_user_id',
+			'',
+			'Ref: users.id <? follows.followed_user_id',
+			''
+		].join('\n')
+	);
+	await expect(nodes).toHaveCount(3);
+	await expect(page.getByText('3 tables · 3 refs').first()).toBeVisible();
+	await expect(page.getByText(/parse error/)).toHaveCount(0);
+	await expect(page.locator('.svelte-flow__edge')).toHaveCount(3);
+	// no two tables overlap on the canvas
+	const boxes = await nodes.evaluateAll((els) => els.map((e) => e.getBoundingClientRect().toJSON()));
+	for (let i = 0; i < boxes.length; i++)
+		for (let j = i + 1; j < boxes.length; j++) {
+			const a = boxes[i],
+				b = boxes[j];
+			const overlap = a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+			expect(overlap, `tables ${i} and ${j} overlap`).toBe(false);
+		}
+});

@@ -29,6 +29,7 @@ impl Codec for DbmlCodec {
             enums: true,
             defaults: true,
             notes: true,
+            optional_refs: true,
             dialects: &[],
         }
     }
@@ -202,7 +203,8 @@ fn parse_dbml(src: &str) -> Result<SchemaIR, CoreError> {
                         quote_ident(&col.name),
                         spec
                     );
-                    let (r, unk) = parse_ref_body(&body).ok_or_else(|| fail("bad inline ref"))?;
+                    let (r, unk) =
+                        parse_ref_body(&body).map_err(|e| fail(&format!("bad inline ref: {e}")))?;
                     ir.refs.push(r);
                     ir.unknown.extend(unk);
                 }
@@ -221,8 +223,8 @@ fn parse_dbml(src: &str) -> Result<SchemaIR, CoreError> {
                 p.body.push(l.to_string());
             }
             (Some(Block::Ref(name)), l) if !l.is_empty() && !l.starts_with("//") => {
-                let (mut r, unk) =
-                    parse_ref_body(strip_comment(l)).ok_or_else(|| fail("bad Ref line"))?;
+                let (mut r, unk) = parse_ref_body(strip_comment(l))
+                    .map_err(|e| fail(&format!("bad Ref line: {e}")))?;
                 r.name = name.clone();
                 ir.refs.push(r);
                 ir.unknown.extend(unk);
@@ -276,7 +278,7 @@ fn parse_dbml(src: &str) -> Result<SchemaIR, CoreError> {
                     block = Some(Block::Ref(name));
                 } else {
                     let (mut r, unk) = parse_ref_body(strip_comment(rest[i + 1..].trim()))
-                        .ok_or_else(|| fail("bad Ref line"))?;
+                        .map_err(|e| fail(&format!("bad Ref line: {e}")))?;
                     r.name = name;
                     ir.refs.push(r);
                     ir.unknown.extend(unk);
@@ -534,26 +536,47 @@ fn parse_index_line(l: &str) -> Option<(IndexDef, Vec<String>)> {
 
 /// `a.b > c.d [settings]`, composite `a.(x, y) > c.(x, y)`. `delete:` / `update:`
 /// become the ref's referential actions; other settings are returned for
-/// preservation as unknowns.
-fn parse_ref_body(body: &str) -> Option<(Ref, Vec<String>)> {
+/// preservation as unknowns. A `?` right next to the operator marks that side
+/// optional (dbdiagram, Aug 2026): `?>`, `<?`, `?-?`.
+fn parse_ref_body(body: &str) -> Result<(Ref, Vec<String>), String> {
     let body = body.trim();
-    let (op, kind) = outside_quotes(body).find_map(|(i, c)| match c {
-        '>' => Some((i, RefKind::ManyToOne)),
-        '-' => Some((i, RefKind::OneToOne)),
-        // `<>` (many-to-many) has no IR kind yet — fail loudly
-        '<' => (!body[i + 1..].starts_with('>')).then_some((i, RefKind::OneToMany)),
-        _ => None,
-    })?;
-    let rhs_full = &body[op + 1..];
+    let (op, kind) = outside_quotes(body)
+        .find_map(|(i, c)| match c {
+            '>' => Some((i, RefKind::ManyToOne)),
+            '-' => Some((i, RefKind::OneToOne)),
+            '<' => Some((i, RefKind::OneToMany)),
+            _ => None,
+        })
+        .ok_or("expected a relationship operator (<, >, -)")?;
+    // `<>` (many-to-many, optionally `?<>?`) has no IR kind: refuse instead of
+    // reading the `>` as the operator and the `<` as part of a column name
+    if body[op..].starts_with("<>") {
+        return Err("many-to-many `<>` relationships are not supported".into());
+    }
+    let lhs_full = &body[..op];
+    let optional_from = lhs_full.ends_with('?');
+    let lhs = lhs_full.strip_suffix('?').unwrap_or(lhs_full);
+    let after = &body[op + 1..];
+    let optional_to = after.starts_with('?');
+    let rhs_full = after.strip_prefix('?').unwrap_or(after);
     let (rhs, unknown) = match outside_quotes(rhs_full).find(|&(_, c)| c == '[') {
         Some((i, _)) => (
             rhs_full[..i].trim(),
-            split_settings(bracket_inner(&rhs_full[i..])?),
+            split_settings(bracket_inner(&rhs_full[i..]).ok_or("unclosed `[`")?),
         ),
         None => (rhs_full.trim(), Vec::new()),
     };
-    let (ft, fc) = ref_endpoint(&body[..op])?;
-    let (tt, tc) = ref_endpoint(rhs)?;
+    let (ft, fc) = ref_endpoint(lhs).ok_or("bad left endpoint, expected table.column")?;
+    let (tt, tc) = ref_endpoint(rhs).ok_or("bad right endpoint, expected table.column")?;
+    for (t, cols) in [(&ft, &fc), (&tt, &tc)] {
+        let name_ok = |n: &str| !n.is_empty() && !n.contains(['?', '<', '>']);
+        if !name_ok(t) || !cols.iter().all(|c| name_ok(c)) {
+            return Err(format!(
+                "unexpected character in endpoint `{t}.{}`",
+                cols.join(",")
+            ));
+        }
+    }
     let (mut on_delete, mut on_update) = (None, None);
     let unknown = unknown
         .into_iter()
@@ -574,7 +597,7 @@ fn parse_ref_body(body: &str) -> Option<(Ref, Vec<String>)> {
             }
         })
         .collect();
-    Some((
+    Ok((
         Ref {
             from_table: ft,
             from_cols: fc,
@@ -584,6 +607,8 @@ fn parse_ref_body(body: &str) -> Option<(Ref, Vec<String>)> {
             name: None,
             on_delete,
             on_update,
+            optional_from,
+            optional_to,
         },
         unknown,
     ))
@@ -780,6 +805,11 @@ fn emit_dbml(ir: &SchemaIR) -> Result<String, CoreError> {
             RefKind::OneToOne => "-",
             RefKind::OneToMany => "<",
         };
+        let op = format!(
+            "{}{op}{}",
+            if r.optional_from { "?" } else { "" },
+            if r.optional_to { "?" } else { "" }
+        );
         let name = r
             .name
             .as_ref()
