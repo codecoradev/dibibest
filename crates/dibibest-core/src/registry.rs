@@ -101,7 +101,13 @@ impl Registry {
     }
 
     fn parse_with(&self, src: &str, from: &FormatId) -> Result<SchemaIR, CoreError> {
-        self.codec(from)?.parse(src)
+        let codec = self.codec(from)?;
+        let ir = codec.parse(src)?;
+        ir.check_names().map_err(|message| CoreError::Parse {
+            format: codec.id(),
+            message,
+        })?;
+        Ok(ir)
     }
 
     /// Parse source text into the IR (public: web/canvas and tests need this).

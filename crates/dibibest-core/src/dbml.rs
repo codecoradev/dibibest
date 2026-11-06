@@ -14,7 +14,7 @@ pub struct DbmlCodec;
 const FMT: &str = "dbml";
 
 impl Codec for DbmlCodec {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "dbml"
     }
 

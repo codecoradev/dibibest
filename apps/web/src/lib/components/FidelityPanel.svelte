@@ -34,7 +34,7 @@
 		{#if f.dropped?.length}
 			<h3>Dropped</h3>
 			<ul>
-				{#each f.dropped as d (d)}<li>{d}</li>{/each}
+				{#each f.dropped as d, i (i)}<li>{d}</li>{/each}
 			</ul>
 		{/if}
 	</aside>

@@ -362,6 +362,32 @@ impl SchemaIR {
     pub fn table(&self, name: &str) -> Option<&Table> {
         self.tables.iter().find(|t| t.name == name)
     }
+
+    /// Refuse a schema that declares the same table, column (within a table)
+    /// or enum twice. Every format treats these as one entity, so keeping both
+    /// would silently merge or drop one of them downstream (ERD-JSON node ids,
+    /// ref targets, the canvas).
+    pub fn check_names(&self) -> Result<(), String> {
+        let mut tables = std::collections::HashSet::new();
+        for t in &self.tables {
+            if !tables.insert(t.name.as_str()) {
+                return Err(format!("duplicate table `{}`", t.name));
+            }
+            let mut cols = std::collections::HashSet::new();
+            for c in &t.columns {
+                if !cols.insert(c.name.as_str()) {
+                    return Err(format!("duplicate column `{}.{}`", t.name, c.name));
+                }
+            }
+        }
+        let mut enums = std::collections::HashSet::new();
+        for e in &self.enums {
+            if !enums.insert(e.name.as_str()) {
+                return Err(format!("duplicate enum `{}`", e.name));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A SQL string literal for `s`: single-quoted, inner `'` doubled.

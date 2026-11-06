@@ -152,7 +152,7 @@ impl Codec for ErdJsonCodec {
         crate::scan::erdjson(src)
     }
 
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         FMT
     }
 

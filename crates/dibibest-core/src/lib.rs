@@ -24,7 +24,7 @@ pub use scan::SourceCounts;
 /// the two directions it serves. This is the seam format plugins plug into.
 pub trait Codec {
     /// Stable registry id, e.g. `FormatId("dbml")`.
-    fn id(&self) -> &str;
+    fn id(&self) -> &'static str;
     /// What this codec can honestly do — drives fidelity reporting.
     fn caps(&self) -> Caps;
     fn parse(&self, src: &str) -> Result<SchemaIR, CoreError>;
