@@ -182,14 +182,34 @@ describe('transport', () => {
 		expect(await res.text()).toBe('');
 	});
 
-	test('bad JSON, batches, unknown versions and oversized bodies are refused', async () => {
+	test('bad JSON, batches and oversized bodies are refused', async () => {
 		const auth = { authorization: `Bearer ${await jwt()}` };
 		expect((await handleMcp(post('{nope', auth), ENV, core, fetcher)).status).toBe(400);
 		expect((await handleMcp(post([{ jsonrpc: '2.0', id: 1, method: 'ping' }], auth), ENV, core, fetcher)).status).toBe(400);
-		const v = await handleMcp(post({ jsonrpc: '2.0', id: 1, method: 'ping' }, { ...auth, 'mcp-protocol-version': '1999-01-01' }), ENV, core, fetcher);
-		expect(v.status).toBe(400);
 		const big = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'convert_schema', arguments: { source: 'x'.repeat(MAX_BODY_BYTES), to: 'sql' } } };
 		expect((await handleMcp(post(big, auth), ENV, core, fetcher)).status).toBe(413);
+	});
+
+	test('server/discover under a newer protocol gets -32601 with 200, so clients fall back to initialize', async () => {
+		// Claude opens with server/discover (MCP 2026-07-28) before initialize
+		const auth = { authorization: `Bearer ${await jwt()}`, 'mcp-protocol-version': '2026-07-28' };
+		const discover = await handleMcp(
+			post({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: { _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' } } }, auth),
+			ENV,
+			core,
+			fetcher
+		);
+		expect(discover.status).toBe(200);
+		expect(((await discover.json()) as any).error.code).toBe(-32601);
+		const init = await handleMcp(
+			post({ jsonrpc: '2.0', id: 2, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'claude-ai', version: '0.1' } } }, auth),
+			ENV,
+			core,
+			fetcher
+		);
+		expect(((await init.json()) as any).result.protocolVersion).toBe('2025-06-18');
+		const list = await handleMcp(post({ jsonrpc: '2.0', id: 3, method: 'tools/list' }, { ...auth, 'mcp-protocol-version': '2025-06-18' }), ENV, core, fetcher);
+		expect(((await list.json()) as any).result.tools).toHaveLength(3);
 	});
 
 	test('unknown method → JSON-RPC -32601', async () => {

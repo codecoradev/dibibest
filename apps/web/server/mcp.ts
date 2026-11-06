@@ -201,14 +201,18 @@ export async function handleMcp(req: Request, env: Env, core: Core, fetcher: Fet
 	try {
 		await verifyAccessToken(m[1], { issuer, audience: resourceOf(req), jwksUri, fetcher });
 	} catch (e) {
-		if (e instanceof TokenError) return unauthorized(req, 'invalid_token');
+		if (e instanceof TokenError) {
+			// visible in the Cloudflare real-time logs; never logs the token
+			console.warn(`mcp: token refused: ${e.message}`);
+			return unauthorized(req, 'invalid_token');
+		}
 		return json({ error: 'the identity provider cannot be reached right now' }, 503, { 'retry-after': '30' });
 	}
 
-	const version = req.headers.get('mcp-protocol-version');
-	if (version && !PROTOCOL_VERSIONS.includes(version)) {
-		return json(rpcError(null, -32600, `unsupported MCP-Protocol-Version: ${version}`), 400);
-	}
+	// No MCP-Protocol-Version gate: the version is negotiated in `initialize`.
+	// Claude opens with `server/discover` under the 2026-07-28 protocol and falls
+	// back to `initialize` only on a JSON-RPC -32601 answer; an HTTP 400 for the
+	// unknown header version stopped it before tools/list (#67).
 	const length = Number(req.headers.get('content-length') ?? 0);
 	if (length > MAX_BODY_BYTES) return json(rpcError(null, -32600, 'request too large'), 413);
 	const text = await req.text();
@@ -228,5 +232,7 @@ export async function handleMcp(req: Request, env: Env, core: Core, fetcher: Fet
 	// notifications (no id) and client responses get no body
 	if (rpc.method === undefined || rpc.id === undefined) return new Response(null, { status: 202 });
 	if (typeof rpc.method !== 'string') return json(rpcError(rpc.id ?? null, -32600, 'invalid request'), 400);
-	return json(await dispatch(rpc, core));
+	const reply = (await dispatch(rpc, core)) as { error?: { code: number } };
+	console.log(`mcp: ${rpc.method}${reply.error ? ` -> ${reply.error.code}` : ''}`);
+	return json(reply);
 }
