@@ -140,3 +140,49 @@ fn unknown_edge_action_is_a_parse_error() {
         .to_string();
     assert!(err.contains("unknown onDelete `explode`"), "{err}");
 }
+
+#[test]
+fn grid_row_grows_with_its_tallest_table() {
+    // 23 columns is 595px tall: the row below must start under it, not at the
+    // fixed 360px cell (that put `events` on top of `activities`)
+    let tall = |name: &str, n: usize| {
+        let cols: Vec<_> = (0..n)
+            .map(|i| serde_json::json!({"name": format!("c{i}"), "type": "int", "isPk": false, "isFk": false, "isUnique": false, "isNullable": true}))
+            .collect();
+        serde_json::json!({"id": name, "name": name, "position": null, "columns": cols})
+    };
+    let mut doc = serde_json::json!({
+        "version": 1,
+        "nodes": [tall("a", 23), tall("b", 3), tall("c", 3), tall("d", 3)],
+        "edges": [],
+        "meta": {"layout": null}
+    });
+    apply_layout(&mut doc, LayoutStrategy::Grid).unwrap();
+    let pos = |i: usize| {
+        let p = &doc["nodes"][i]["position"];
+        (p["x"].as_i64().unwrap(), p["y"].as_i64().unwrap())
+    };
+    // 4 tables → 2 per row: a,b on row 0; c,d on row 1
+    assert_eq!(pos(0), (0, 0));
+    assert_eq!(pos(1), (320, 0));
+    let a_bottom = dibibest_core::erdjson::card_height(23);
+    assert!(
+        pos(2).1 >= a_bottom + 40,
+        "row 1 starts at {}, a ends at {a_bottom}",
+        pos(2).1
+    );
+    assert_eq!(pos(2).0, 0);
+    assert_eq!(pos(3), (320, pos(2).1));
+}
+
+#[test]
+fn grid_keeps_the_old_cell_for_short_tables() {
+    let n = |i: usize| {
+        serde_json::json!({"id": format!("t{i}"), "name": format!("t{i}"), "position": null,
+        "columns": [{"name": "id", "type": "int", "isPk": true, "isFk": false, "isUnique": false, "isNullable": false}]})
+    };
+    let mut doc = serde_json::json!({"version": 1, "nodes": [n(0), n(1), n(2), n(3)], "edges": [], "meta": {"layout": null}});
+    apply_layout(&mut doc, LayoutStrategy::Grid).unwrap();
+    assert_eq!(doc["nodes"][2]["position"]["y"], 360);
+    assert_eq!(doc["nodes"][3]["position"]["x"], 320);
+}

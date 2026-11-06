@@ -344,12 +344,39 @@ impl Codec for ErdJsonCodec {
 /// Layout strategies. elk/dagre arrive with R4 behind this same enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutStrategy {
-    /// Row-major grid in node order, fixed cell size.
+    /// Row-major grid in node order; a row grows to its tallest table.
     Grid,
 }
 
 pub const GRID_CELL_W: i64 = 320;
+/// Minimum row height; a row with a taller table grows to fit it.
 pub const GRID_CELL_H: i64 = 360;
+/// Space kept between a table and the row below it.
+const GRID_GAP: i64 = 40;
+
+/// Height of a table card with `columns` rows (same geometry as the canvas node
+/// and the SVG renderer: border + header + padding + rows + padding + border).
+pub fn card_height(columns: usize) -> i64 {
+    1 + 33 + 4 + columns as i64 * 24 + 4 + 1
+}
+
+/// Row-major grid positions for tables with the given column counts. Columns
+/// are `GRID_CELL_W` apart; a row is as tall as its tallest table (at least
+/// `GRID_CELL_H`), so a long table never lands on the one below it.
+pub fn grid_positions(column_counts: &[usize]) -> Vec<(i64, i64)> {
+    let n = column_counts.len();
+    let cols = ((n as f64).sqrt().ceil() as usize).max(1);
+    let mut out = Vec::with_capacity(n);
+    let mut y = 0;
+    for row in column_counts.chunks(cols) {
+        let tallest = row.iter().map(|&c| card_height(c)).max().unwrap_or(0);
+        for i in 0..row.len() {
+            out.push((i as i64 * GRID_CELL_W, y));
+        }
+        y += (tallest + GRID_GAP).max(GRID_CELL_H);
+    }
+    out
+}
 
 /// Fill `nodes[].position` and `meta.layout` of an ERD-JSON document in place.
 /// Deterministic: same document + strategy → same positions.
@@ -361,11 +388,17 @@ pub fn apply_layout(doc: &mut Value, strategy: LayoutStrategy) -> Result<(), Cor
     let (n, label) = match strategy {
         LayoutStrategy::Grid => (nodes.len(), "grid"),
     };
-    // ponytail: fixed cell ignores node height; size-aware cells land with elk/dagre (R4).
-    let cols = ((n as f64).sqrt().ceil() as usize).max(1);
-    for (i, node) in nodes.iter_mut().enumerate() {
-        let (row, col) = ((i / cols) as i64, (i % cols) as i64);
-        node["position"] = serde_json::json!({"x": col * GRID_CELL_W, "y": row * GRID_CELL_H});
+    let counts: Vec<usize> = nodes
+        .iter()
+        .map(|n| {
+            n.get("columns")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len)
+        })
+        .collect();
+    debug_assert_eq!(counts.len(), n);
+    for (node, (x, y)) in nodes.iter_mut().zip(grid_positions(&counts)) {
+        node["position"] = serde_json::json!({"x": x, "y": y});
     }
     doc["meta"]["layout"] = Value::String(label.into());
     Ok(())
