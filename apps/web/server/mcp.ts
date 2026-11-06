@@ -63,14 +63,46 @@ type RpcId = string | number | null;
 type RpcMessage = { jsonrpc?: string; id?: RpcId; method?: unknown; params?: unknown; result?: unknown; error?: unknown };
 
 const MODERN_META = 'io.modelcontextprotocol/protocolVersion';
+/** Stateless revisions served from per-request `_meta` (#70). */
+export const MODERN_VERSIONS = ['2026-07-28'];
+const TOOLS_TTL_MS = 300_000;
+const DISCOVER_TTL_MS = 3_600_000;
+const SERVER_INFO = { name: 'dibibest', version: VERSION };
 
-/** A request in the stateless MCP era (2026-07-28+): server/discover or per-request version metadata. */
-function isModern(req: Request, rpc: RpcMessage): boolean {
-	if (rpc.method === 'server/discover') return true;
+/** The per-request protocol version of a modern request, if any. */
+function metaVersion(rpc: RpcMessage): string | undefined {
 	const meta = (rpc.params as { _meta?: Record<string, unknown> } | undefined)?._meta;
-	if (meta && typeof meta === 'object' && MODERN_META in meta) return true;
-	const header = req.headers.get('mcp-protocol-version');
-	return !!header && header >= '2026-' && !PROTOCOL_VERSIONS.includes(header);
+	const v = meta && typeof meta === 'object' ? meta[MODERN_META] : undefined;
+	return typeof v === 'string' ? v : undefined;
+}
+
+/** `=?base64?…?=` sentinel of `Mcp-Name` (plain values pass). */
+function decodeHeader(raw: string): string | null {
+	const m = /^=\?base64\?(.*)\?=$/.exec(raw);
+	if (!m) return raw;
+	try {
+		return new TextDecoder().decode(Uint8Array.from(atob(m[1]), (c) => c.charCodeAt(0)));
+	} catch {
+		return null;
+	}
+}
+
+/** Streamable HTTP validation of a modern request: mirrored headers must match the body (-32020). */
+function headerMismatch(req: Request, rpc: RpcMessage, version: string): string | null {
+	const check = (name: string, expected: string, decode: boolean): string | null => {
+		const raw = req.headers.get(name);
+		if (raw === null) return `Header mismatch: required header ${name} is missing`;
+		const got = decode ? decodeHeader(raw) : raw;
+		if (got === null) return `Header mismatch: ${name} header has an invalid base64 value`;
+		return got === expected ? null : `Header mismatch: ${name} header does not match the body`;
+	};
+	const method = String(rpc.method);
+	const params = (rpc.params ?? {}) as Record<string, unknown>;
+	return (
+		check('mcp-protocol-version', version, false) ??
+		check('mcp-method', method, false) ??
+		(method === 'tools/call' ? check('mcp-name', String(params.name ?? ''), true) : null)
+	);
 }
 
 const rpcResult = (id: RpcId, result: unknown) => ({ jsonrpc: '2.0', id, result });
@@ -90,7 +122,8 @@ const TOOLS = [
 				to: { type: 'string', description: 'Target format id', enum: FORMATS }
 			},
 			required: ['source', 'to']
-		}
+		},
+		annotations: { readOnlyHint: true, openWorldHint: false }
 	},
 	{
 		name: 'render_diagram',
@@ -105,14 +138,16 @@ const TOOLS = [
 				theme: { type: 'string', description: 'Colour scheme (default dark)', enum: ['dark', 'light'] }
 			},
 			required: ['source']
-		}
+		},
+		annotations: { readOnlyHint: true, openWorldHint: false }
 	},
 	{
 		name: 'list_formats',
 		title: 'List supported formats',
 		description:
 			'List format ids the server can convert between, including SQL dialects (sql = PostgreSQL, sql:mysql, sql:sqlite).',
-		inputSchema: { type: 'object', properties: {} }
+		inputSchema: { type: 'object', properties: {} },
+		annotations: { readOnlyHint: true, openWorldHint: false }
 	}
 ];
 
@@ -187,6 +222,50 @@ async function dispatch(msg: RpcMessage, core: Core): Promise<object> {
 		default:
 			return rpcError(id, -32601, `method not found: ${String(msg.method)}`);
 	}
+}
+
+/** A modern (2026-07-28) request: stateless, results carry `resultType` and `serverInfo`. */
+async function modern(req: Request, rpc: RpcMessage, version: string | undefined, core: Core): Promise<Response> {
+	const id = rpc.id ?? null;
+	const err = (status: number, code: number, message: string, data?: unknown) => {
+		console.log(`mcp: ${rpc.method} (modern) -> ${code}`);
+		return json({ jsonrpc: '2.0', id, error: data === undefined ? { code, message } : { code, message, data } }, status);
+	};
+	if (version !== undefined) {
+		const mismatch = headerMismatch(req, rpc, version);
+		if (mismatch) return err(400, -32020, mismatch);
+		if (!MODERN_VERSIONS.includes(version)) {
+			return err(400, -32022, 'Unsupported protocol version', {
+				supported: [...MODERN_VERSIONS, ...PROTOCOL_VERSIONS],
+				requested: version
+			});
+		}
+	}
+	const params = (rpc.params && typeof rpc.params === 'object' ? rpc.params : {}) as Record<string, unknown>;
+	let result: Record<string, unknown>;
+	switch (rpc.method) {
+		case 'server/discover':
+			result = {
+				supportedVersions: [...MODERN_VERSIONS, ...PROTOCOL_VERSIONS],
+				capabilities: { tools: {} },
+				ttlMs: DISCOVER_TTL_MS,
+				cacheScope: 'public'
+			};
+			break;
+		case 'tools/list':
+			result = { tools: TOOLS, ttlMs: TOOLS_TTL_MS, cacheScope: 'public' };
+			break;
+		case 'tools/call': {
+			const args = params.arguments && typeof params.arguments === 'object' ? params.arguments : {};
+			result = (await callTool(params.name, args as Record<string, unknown>, core)) as Record<string, unknown>;
+			break;
+		}
+		default:
+			// ping and the initialize handshake are gone in the modern revision
+			return err(404, -32601, `method not found: ${String(rpc.method)}`);
+	}
+	console.log(`mcp: ${rpc.method} (modern)`);
+	return json(rpcResult(id, { ...result, resultType: 'complete', _meta: { 'io.modelcontextprotocol/serverInfo': SERVER_INFO } }));
 }
 
 const CORS_ALLOW_HEADERS =
@@ -276,16 +355,12 @@ async function serve(req: Request, env: Env, core: Core, fetcher: Fetch): Promis
 	// notifications (no id) and client responses get no body
 	if (rpc.method === undefined || rpc.id === undefined) return new Response(null, { status: 202 });
 	if (typeof rpc.method !== 'string') return json(rpcError(rpc.id ?? null, -32600, 'invalid request'), 400);
-	if (isModern(req, rpc)) {
-		// MCP 2026-07-28, "Backward Compatibility": on Streamable HTTP a dual-era
-		// client falls back to `initialize` when a modern request gets a 4xx whose
-		// body is not a modern error (-32020..-32099). A 200 here made Claude treat
-		// this server as modern, so it never listed the tools (#69).
-		console.log(`mcp: ${rpc.method} (modern) -> 400, legacy only`);
-		return json(
-			rpcError(rpc.id ?? null, -32600, `this server speaks MCP ${PROTOCOL_VERSIONS.join(', ')}; call initialize`),
-			400
-		);
+	// Era selection, as uteke-cloud does (#70): `initialize` = legacy handshake;
+	// a per-request `_meta` version, or `server/discover`, = modern and stateless
+	// (MCP 2026-07-28). Claude opens with `server/discover` and stays modern.
+	const version = metaVersion(rpc);
+	if (rpc.method !== 'initialize' && (version !== undefined || rpc.method === 'server/discover')) {
+		return modern(req, rpc, version, core);
 	}
 	const reply = (await dispatch(rpc, core)) as { error?: { code: number } };
 	console.log(`mcp: ${rpc.method}${reply.error ? ` -> ${reply.error.code}` : ''}`);

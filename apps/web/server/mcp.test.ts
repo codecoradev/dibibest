@@ -212,36 +212,82 @@ describe('transport', () => {
 		expect((await handleMcp(post(big, auth), ENV, core, fetcher)).status).toBe(413);
 	});
 
-	test('modern requests (2026-07-28) get a 4xx without a modern error, so dual-era clients fall back to initialize', async () => {
-		// Claude opens with server/discover (MCP 2026-07-28) before initialize
-		const auth = { authorization: `Bearer ${await jwt()}`, 'mcp-protocol-version': '2026-07-28' };
+	test('dual-era: modern (2026-07-28) requests are served statelessly, like uteke-cloud', async () => {
+		const bearer = `Bearer ${await jwt()}`;
+		const modern = (method: string, params: Record<string, unknown> = {}, extra: Record<string, string> = {}) =>
+			handleMcp(
+				post(
+					{ jsonrpc: '2.0', id: 1, method, params: { ...params, _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' } } },
+					{ authorization: bearer, 'mcp-protocol-version': '2026-07-28', 'mcp-method': method, ...extra }
+				),
+				ENV,
+				core,
+				fetcher
+			);
+		// Claude opens with server/discover
 		const discover = await handleMcp(
-			post({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: { _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' } } }, auth),
+			post({ jsonrpc: '2.0', id: 1, method: 'server/discover' }, { authorization: bearer, 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'server/discover' }),
 			ENV,
 			core,
 			fetcher
 		);
-		expect(discover.status).toBe(400);
-		const err = ((await discover.json()) as any).error;
-		expect(err.code).toBe(-32600); // not in the modern range -32020..-32099
-		// a modern tools/list (per-request _meta) is refused the same way
-		const modernList = await handleMcp(
-			post({ jsonrpc: '2.0', id: 9, method: 'tools/list', params: { _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' } } }, auth),
+		expect(discover.status).toBe(200);
+		const d = ((await discover.json()) as any).result;
+		expect(d.supportedVersions[0]).toBe('2026-07-28');
+		expect(d.supportedVersions).toContain('2025-06-18');
+		expect(d.capabilities).toEqual({ tools: {} });
+		expect(d.resultType).toBe('complete');
+		expect(d._meta['io.modelcontextprotocol/serverInfo'].name).toBe('dibibest');
+
+		const list = ((await (await modern('tools/list')).json()) as any).result;
+		expect(list.tools.map((t: { name: string }) => t.name)).toEqual(['convert_schema', 'render_diagram', 'list_formats']);
+		expect(list.ttlMs).toBeGreaterThan(0);
+		expect(list.cacheScope).toBe('public');
+		expect(list.resultType).toBe('complete');
+		expect(list.tools[0].annotations.readOnlyHint).toBe(true);
+
+		const call = await modern('tools/call', { name: 'list_formats', arguments: {} }, { 'mcp-name': 'list_formats' });
+		const c = ((await call.json()) as any).result;
+		expect(c.isError).toBe(false);
+		expect(c.content[0].text).toContain('sql:mysql');
+		expect(c.resultType).toBe('complete');
+		// Mcp-Name may be base64-encoded
+		const b64 = await modern('tools/call', { name: 'list_formats', arguments: {} }, { 'mcp-name': `=?base64?${btoa('list_formats')}?=` });
+		expect(b64.status).toBe(200);
+
+		// header validation, unsupported versions, removed methods
+		const missing = await modern('tools/call', { name: 'list_formats', arguments: {} });
+		expect(missing.status).toBe(400);
+		expect(((await missing.json()) as any).error.code).toBe(-32020);
+		const wrong = await modern('tools/list', {}, { 'mcp-method': 'tools/call' });
+		expect(((await wrong.json()) as any).error.code).toBe(-32020);
+		const future = await handleMcp(
+			post(
+				{ jsonrpc: '2.0', id: 1, method: 'tools/list', params: { _meta: { 'io.modelcontextprotocol/protocolVersion': '2099-01-01' } } },
+				{ authorization: bearer, 'mcp-protocol-version': '2099-01-01', 'mcp-method': 'tools/list' }
+			),
 			ENV,
 			core,
 			fetcher
 		);
-		expect(modernList.status).toBe(400);
-		const legacy = { authorization: auth.authorization };
+		expect(future.status).toBe(400);
+		const fe = ((await future.json()) as any).error;
+		expect(fe.code).toBe(-32022);
+		expect(fe.data.supported[0]).toBe('2026-07-28');
+		const ping = await modern('ping');
+		expect(ping.status).toBe(404);
+		expect(((await ping.json()) as any).error.code).toBe(-32601);
+
+		// the legacy handshake keeps working
 		const init = await handleMcp(
-			post({ jsonrpc: '2.0', id: 2, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'claude-ai', version: '0.1' } } }, legacy),
+			post({ jsonrpc: '2.0', id: 2, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'claude-ai', version: '0.1' } } }, { authorization: bearer }),
 			ENV,
 			core,
 			fetcher
 		);
 		expect(((await init.json()) as any).result.protocolVersion).toBe('2025-06-18');
-		const list = await handleMcp(post({ jsonrpc: '2.0', id: 3, method: 'tools/list' }, { ...legacy, 'mcp-protocol-version': '2025-06-18' }), ENV, core, fetcher);
-		expect(((await list.json()) as any).result.tools).toHaveLength(3);
+		const legacyList = await handleMcp(post({ jsonrpc: '2.0', id: 3, method: 'tools/list' }, { authorization: bearer, 'mcp-protocol-version': '2025-06-18' }), ENV, core, fetcher);
+		expect(((await legacyList.json()) as any).result.tools).toHaveLength(3);
 	});
 
 	test('unknown method → JSON-RPC -32601', async () => {

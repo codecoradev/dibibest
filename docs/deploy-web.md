@@ -91,12 +91,19 @@ running the core compiled to WASM inside a Pages Function. Client config:
   refused because the proof is not checked). Opaque tokens are refused.
 - **Transport:** stateless, JSON responses only (no SSE stream, no
   `Mcp-Session-Id`); `GET` answers 405. Protocol versions 2025-11-25,
-  2025-06-18 and 2025-03-26, negotiated in `initialize`. Modern requests
-  (MCP 2026-07-28) get HTTP 400 with JSON-RPC -32600, which is not a modern
-  error code. That covers `server/discover`, per-request
-  `_meta["io.modelcontextprotocol/protocolVersion"]`, and a 2026+
-  `MCP-Protocol-Version` header. The spec's backward-compatibility rule then
-  makes a dual-era client such as Claude fall back to `initialize`. Browser origins get CORS (claude.ai sends
+  2025-06-18 and 2025-03-26 through `initialize`. The endpoint is
+  **dual-era**, the same as uteke-cloud. A request that carries
+  `_meta["io.modelcontextprotocol/protocolVersion"]`, or a `server/discover`
+  call, is served statelessly under **2026-07-28**:
+  - `server/discover` returns `supportedVersions`, `capabilities`, `ttlMs` and
+    `cacheScope`;
+  - `tools/list` adds `ttlMs` and `cacheScope`;
+  - results carry `resultType: "complete"` and `_meta` serverInfo;
+  - the `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers must match
+    the body (-32020);
+  - other versions get -32022, and `ping` gets 404 -32601.
+
+  Claude opens with `server/discover` and stays on the modern path. Browser origins get CORS (claude.ai sends
   `Origin: https://claude.ai`). The origin is echoed, `WWW-Authenticate` is
   exposed, and `OPTIONS` preflight is answered. This is safe because every
   request needs a bearer token and no cookie is read. Bodies over 512 KB get
