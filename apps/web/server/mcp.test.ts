@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { b64url, type Env } from './auth';
 import { makeCore, type Core } from './core';
 import { resetJwksCache, verifyAccessToken, TokenError } from './jwt';
-import { handleMcp, handleProtectedResource, MAX_BODY_BYTES } from './mcp';
+import { handleAuthorizationServerMetadata, handleMcp, handleProtectedResource, MAX_BODY_BYTES } from './mcp';
 
 const ISSUER = 'https://idp-mcp.test/api/auth';
 const ENV: Env = { OIDC_ISSUER: ISSUER };
@@ -33,6 +33,7 @@ const fetcher = (async (input: RequestInfo | URL) => {
 	const url = String(input);
 	if (url === `${ISSUER}/.well-known/openid-configuration`) {
 		return Response.json({
+			issuer: ISSUER,
 			authorization_endpoint: `${ISSUER}/oauth2/authorize`,
 			token_endpoint: `${ISSUER}/oauth2/token`,
 			userinfo_endpoint: `${ISSUER}/oauth2/userinfo`,
@@ -89,6 +90,21 @@ describe('protected resource metadata', () => {
 
 	test('404 without an issuer', () => {
 		expect(handleProtectedResource(new Request(`${APP}/.well-known/oauth-protected-resource`), {}).status).toBe(404);
+	});
+});
+
+describe('authorization server metadata on the MCP origin', () => {
+	test('serves the issuer document unchanged at the RFC 8414 and OIDC paths', async () => {
+		for (const p of ['/.well-known/oauth-authorization-server', '/.well-known/oauth-authorization-server/mcp', '/.well-known/openid-configuration']) {
+			const res = await handleAuthorizationServerMetadata(new Request(`${APP}${p}`), ENV, fetcher);
+			expect(res.status).toBe(200);
+			expect(res.headers.get('content-type')).toContain('application/json');
+			const doc = (await res.json()) as any;
+			expect(doc.issuer).toBe(ISSUER);
+			expect(doc.authorization_endpoint).toBe(`${ISSUER}/oauth2/authorize`);
+		}
+		const other = await handleAuthorizationServerMetadata(new Request(`${APP}/.well-known/oauth-authorization-server/other`), ENV, fetcher);
+		expect(other.status).toBe(404);
 	});
 });
 
@@ -242,7 +258,7 @@ describe('transport', () => {
 		const list = ((await (await modern('tools/list')).json()) as any).result;
 		expect(list.tools.map((t: { name: string }) => t.name)).toEqual(['convert_schema', 'render_diagram', 'list_formats']);
 		expect(list.ttlMs).toBeGreaterThan(0);
-		expect(list.cacheScope).toBe('public');
+		expect(list.cacheScope).toBe('private');
 		expect(list.resultType).toBe('complete');
 		expect(list.tools[0].annotations.readOnlyHint).toBe(true);
 
