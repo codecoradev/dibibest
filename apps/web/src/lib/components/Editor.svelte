@@ -112,39 +112,16 @@
 		return r ? { from: r.from, options: r.options.map(toCompletion), validFor: /^[@\w.]*$/ } : null;
 	};
 
-	// Tab indents and accepts a suggestion. To keep keyboard users from being trapped in
-	// the editor, Escape then Tab moves focus on to the next control instead.
-	let escaped = false;
+	// Tab accepts the open suggestion or indents; Shift+Tab dedents. Keyboard users are not
+	// trapped: CodeMirror's tab-focus mode lets Escape, then Tab (or Shift+Tab) within two
+	// seconds move focus on to the neighbouring control, and it ignores a bare Shift press.
 	const assistKeys = [
 		...closeBracketsKeymap,
 		{ key: 'ArrowDown', run: moveCompletionSelection(true) },
 		{ key: 'ArrowUp', run: moveCompletionSelection(false) },
 		{ key: 'Ctrl-Space', run: startCompletion },
-		{
-			key: 'Escape',
-			run: (v: EditorView) => {
-				if (closeCompletion(v)) return true;
-				escaped = true;
-				return false;
-			}
-		},
-		{
-			key: 'Tab',
-			run: (v: EditorView) => {
-				if (escaped) {
-					escaped = false;
-					return false;
-				}
-				return acceptCompletion(v) || indentMore(v);
-			},
-			shift: (v: EditorView) => {
-				if (escaped) {
-					escaped = false;
-					return false;
-				}
-				return indentLess(v);
-			}
-		},
+		{ key: 'Escape', run: closeCompletion },
+		{ key: 'Tab', run: (v: EditorView) => acceptCompletion(v) || indentMore(v), shift: indentLess },
 		{ key: 'Shift-Alt-f', run: () => (beautify(), true) }
 	];
 
@@ -175,13 +152,7 @@
 								bracketMatching(),
 								indentUnit.of('  '),
 								EditorState.tabSize.of(2),
-								keymap.of(assistKeys),
-								EditorView.domEventHandlers({
-									keydown: (e) => {
-										if (e.key !== 'Escape' && e.key !== 'Tab') escaped = false;
-										return false;
-									}
-								})
+								keymap.of(assistKeys)
 							]),
 					keymap.of([...defaultKeymap, ...historyKeymap]),
 					lang,

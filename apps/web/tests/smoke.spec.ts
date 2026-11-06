@@ -457,4 +457,10 @@ test('editor: closes brackets, indents, Tab accepts a suggestion, Format tidies,
 	await page.keyboard.press('Escape');
 	await page.keyboard.press('Tab');
 	expect(await page.evaluate(() => !!document.activeElement?.closest('.cm-editor'))).toBe(false);
+
+	// ...and backwards too: Shift fires a keydown of its own first, which must not cancel the Escape
+	await editor.click();
+	await page.keyboard.press('Escape');
+	await page.keyboard.press('Shift+Tab');
+	expect(await page.evaluate(() => !!document.activeElement?.closest('.cm-editor'))).toBe(false);
 });
