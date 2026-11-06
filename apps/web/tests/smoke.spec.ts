@@ -25,7 +25,7 @@ test('text → canvas → layouts → fidelity → copy', async ({ page, context
 	// Typing a new table updates the canvas (debounced autosync).
 	await page.getByRole('textbox', { name: 'dbml source' }).click();
 	await page.keyboard.press('ControlOrMeta+End');
-	await page.keyboard.type('\nTable tags {\n  id integer [pk]\n}\n');
+	await page.keyboard.insertText('\nTable tags {\n  id integer [pk]\n}\n');
 	await expect(nodes).toHaveCount(3);
 
 	// Fidelity panel shows the real struct (3 tables kept of 3).
@@ -61,7 +61,7 @@ test('projects persist in the browser across a reload', async ({ page }) => {
 	await expect(nodes).toHaveCount(2);
 	await page.getByRole('textbox', { name: 'dbml source' }).click();
 	await page.keyboard.press('ControlOrMeta+End');
-	await page.keyboard.type('\nTable kept {\n  id integer [pk]\n}\n');
+	await page.keyboard.insertText('\nTable kept {\n  id integer [pk]\n}\n');
 	await expect(nodes).toHaveCount(3);
 	await expect(page.getByText('Saved locally')).toBeVisible();
 
@@ -190,7 +190,7 @@ test.describe('phone', () => {
 		await expect(nodes).toHaveCount(0);
 		await editor.click();
 		await page.keyboard.press('ControlOrMeta+End');
-		await page.keyboard.type('\nTable tags {\n  id integer [pk]\n}\n');
+		await page.keyboard.insertText('\nTable tags {\n  id integer [pk]\n}\n');
 		expect(await overflow()).toBeLessThanOrEqual(0);
 		await panes.getByRole('tab', { name: 'Diagram' }).click();
 		await expect(nodes).toHaveCount(3);
@@ -396,4 +396,65 @@ test('laptop width: the header stays on one row and tall tables do not overlap',
 				b = boxes[j];
 			expect(a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom, `${i} overlaps ${j}`).toBe(false);
 		}
+});
+
+test('editor: closes brackets, indents, Tab accepts a suggestion, Format tidies, Escape then Tab leaves', async ({ page }) => {
+	await page.goto('/app');
+	const nodes = page.locator('.svelte-flow__node-table');
+	await expect(nodes).toHaveCount(2);
+	const editor = page.getByRole('textbox', { name: 'dbml source' });
+	const lines = () => page.locator('.cm-content .cm-line').evaluateAll((els) => els.map((e) => e.textContent ?? ''));
+	const popup = page.locator('.cm-tooltip-autocomplete');
+
+	await editor.click();
+	await page.keyboard.press('ControlOrMeta+A');
+	await page.keyboard.press('Delete');
+
+	// "{" brings its "}"; Enter opens an indented line between them
+	await page.keyboard.type('Table t {');
+	await expect.poll(lines).toEqual(['Table t {}']);
+	await page.keyboard.press('Enter');
+	await expect.poll(lines).toEqual(['Table t {', '  ', '}']);
+
+	// a suggestion for the type, accepted with Tab: "integ" becomes "integer"
+	await page.keyboard.type('id integ');
+	await expect(popup).toBeVisible();
+	await page.keyboard.press('Tab');
+	await expect.poll(async () => (await lines())[1]).toBe('  id integer');
+
+	// with no suggestion open, Tab indents and Shift+Tab takes it back
+	await page.keyboard.press('Enter');
+	await page.keyboard.press('Tab');
+	await expect.poll(async () => (await lines())[2]).toBe('    ');
+	await page.keyboard.press('Shift+Tab');
+	await expect.poll(async () => (await lines())[2]).toBe('  ');
+
+	// the enum-or-type list answers a prefix; "]" typed over the auto-closed one adds no second
+	await page.keyboard.type('name varc');
+	await expect(popup).toBeVisible();
+	await page.keyboard.press('Tab');
+	await page.keyboard.type(' [pk]');
+	await expect.poll(async () => (await lines())[2]).toBe('  name varchar [pk]');
+	await expect(page.locator('article[aria-label="t"]')).toBeVisible();
+	await expect(page.getByText('✓ valid DBML')).toBeVisible();
+
+	// Format: whitespace only (indent, trailing spaces, blank lines), keeps the schema
+	await page.keyboard.press('ControlOrMeta+A');
+	await page.keyboard.press('Delete');
+	await page.keyboard.insertText('\n\nTable m {\nid int   \n\n\n   x text\n  }\n');
+	await expect(page.locator('article[aria-label="m"]')).toBeVisible();
+	const tidy = page.getByRole('button', { name: 'Format' });
+	await tidy.click();
+	await expect.poll(async () => (await lines()).join('\n')).toBe('Table m {\n  id int\n\n  x text\n}\n');
+	await expect(page.getByRole('button', { name: 'Formatted ✓' })).toBeVisible();
+	await expect(page.locator('article[aria-label="m"]')).toBeVisible();
+	await page.waitForTimeout(1500);
+	await tidy.click();
+	await expect(page.getByRole('button', { name: 'Already tidy' })).toBeVisible();
+
+	// keyboard users are not trapped: Escape, then Tab moves focus out of the editor
+	await editor.click();
+	await page.keyboard.press('Escape');
+	await page.keyboard.press('Tab');
+	expect(await page.evaluate(() => !!document.activeElement?.closest('.cm-editor'))).toBe(false);
 });
