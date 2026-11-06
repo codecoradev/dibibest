@@ -91,10 +91,12 @@ running the core compiled to WASM inside a Pages Function. Client config:
   refused because the proof is not checked). Opaque tokens are refused.
 - **Transport:** stateless, JSON responses only (no SSE stream, no
   `Mcp-Session-Id`); `GET` answers 405. Protocol versions 2025-11-25,
-  2025-06-18 and 2025-03-26, negotiated in `initialize`. The
-  `MCP-Protocol-Version` header is not gated. Claude opens with
-  `server/discover` (MCP 2026-07-28), gets JSON-RPC -32601 with HTTP 200, and
-  falls back to `initialize`. Browser origins get CORS (claude.ai sends
+  2025-06-18 and 2025-03-26, negotiated in `initialize`. Modern requests
+  (MCP 2026-07-28) get HTTP 400 with JSON-RPC -32600, which is not a modern
+  error code. That covers `server/discover`, per-request
+  `_meta["io.modelcontextprotocol/protocolVersion"]`, and a 2026+
+  `MCP-Protocol-Version` header. The spec's backward-compatibility rule then
+  makes a dual-era client such as Claude fall back to `initialize`. Browser origins get CORS (claude.ai sends
   `Origin: https://claude.ai`). The origin is echoed, `WWW-Authenticate` is
   exposed, and `OPTIONS` preflight is answered. This is safe because every
   request needs a bearer token and no cookie is read. Bodies over 512 KB get
