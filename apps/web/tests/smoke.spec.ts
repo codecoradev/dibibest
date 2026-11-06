@@ -318,3 +318,36 @@ test('a project saved with duplicate columns by an older build opens instead of 
 	await expect(page.locator('.svelte-flow__node-table')).toHaveCount(1);
 	expect(crashes).toEqual([]);
 });
+
+test('header popups close on a click outside, on Escape, and when another opens', async ({ page }) => {
+	await page.goto('/app');
+	await expect(page.locator('.svelte-flow__node-table')).toHaveCount(2);
+	const projects = page.getByRole('menu', { name: 'Projects' });
+	const exportMenu = page.getByRole('menuitem', { name: /Copy as/ }).first();
+	const fidelity = page.getByRole('complementary', { name: 'Fidelity report' });
+
+	// click outside (the canvas) closes the project menu
+	await page.getByRole('button', { name: /^Projects:/ }).click();
+	await expect(projects).toBeVisible();
+	await page.locator('.svelte-flow__pane').click({ position: { x: 5, y: 5 } });
+	await expect(projects).toHaveCount(0);
+
+	// Escape closes the export menu
+	await page.getByRole('button', { name: 'Export ▾' }).click();
+	await expect(exportMenu).toBeVisible();
+	await page.keyboard.press('Escape');
+	await expect(exportMenu).toHaveCount(0);
+
+	// clicks inside the fidelity panel keep it open; opening Export closes it
+	await page.getByRole('button', { name: /round-trip/ }).click();
+	await expect(fidelity).toBeVisible();
+	await fidelity.click();
+	await expect(fidelity).toBeVisible();
+	await page.getByRole('button', { name: 'Export ▾' }).click();
+	await expect(fidelity).toHaveCount(0);
+	await expect(exportMenu).toBeVisible();
+
+	// the toggle still closes its own popup
+	await page.getByRole('button', { name: 'Export ▾' }).click();
+	await expect(exportMenu).toHaveCount(0);
+});
