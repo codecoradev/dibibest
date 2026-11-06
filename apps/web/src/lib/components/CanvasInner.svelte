@@ -1,5 +1,6 @@
 <script lang="ts">
 	import '@xyflow/svelte/dist/style.css';
+	import { tick } from 'svelte';
 	import {
 		Background,
 		BackgroundVariant,
@@ -84,6 +85,23 @@
 		);
 
 	const total = $derived(ws.erd?.nodes.length ?? 0);
+
+	// fitView on init runs before the store has put any table on the canvas, so a
+	// project opened or a big schema pasted in landed off-screen at 100%. Fit when the
+	// project changes or when two or more tables arrive at once; adding one table while
+	// typing leaves the view alone.
+	let fittedFor = '';
+	let seen = new Set<string>();
+	$effect(() => {
+		const key = ws.projectId ?? '';
+		const ids = nodes.map((n) => n.id);
+		const fresh = ids.filter((id) => !seen.has(id)).length;
+		const projectChanged = key !== fittedFor;
+		seen = new Set(ids);
+		if (!ids.length || !(projectChanged || fresh >= 2)) return;
+		fittedFor = key;
+		tick().then(() => requestAnimationFrame(() => fitView({ maxZoom: 1, padding: 0.12, duration: 200 })));
+	});
 </script>
 
 <div class="canvas" aria-label="ERD canvas">
@@ -139,10 +157,6 @@
 		{#if edit}
 			<Panel position="bottom-left">
 				<div class="hint">drag column → another table to create a relation</div>
-			</Panel>
-		{:else if mode === 'preview'}
-			<Panel position="bottom-left">
-				<div class="hint solid">Live preview — <b>typing updates the diagram instantly</b></div>
 			</Panel>
 		{/if}
 		<Panel position="bottom-right">
@@ -216,12 +230,6 @@
 		font-size: 12.5px;
 		color: var(--text-2);
 		border-style: dashed;
-	}
-	.hint.solid {
-		border-style: solid;
-	}
-	.hint b {
-		color: var(--text-1);
 	}
 	.hud {
 		display: flex;

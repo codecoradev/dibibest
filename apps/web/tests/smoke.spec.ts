@@ -351,3 +351,49 @@ test('header popups close on a click outside, on Escape, and when another opens'
 	await page.getByRole('button', { name: 'Export ▾' }).click();
 	await expect(exportMenu).toHaveCount(0);
 });
+
+test('laptop width: the header stays on one row and tall tables do not overlap', async ({ page }) => {
+	await page.setViewportSize({ width: 1325, height: 663 });
+	await page.route('**/auth/me', (r) =>
+		r.fulfill({ json: { enabled: true, user: { sub: 'u1', email: 'ana@example.com', name: 'Ana Maria Longname' } } })
+	);
+	await page.goto('/app');
+	await expect(page.locator('.svelte-flow__node-table')).toHaveCount(2);
+
+	// a 20-column table first, then tables that must land below it, not on it
+	const cols = Array.from({ length: 20 }, (_, i) => `  col_${i} varchar`).join('\n');
+	const src = `Table big_one {\n  id uuid [pk]\n${cols}\n}\nTable b {\n  id uuid [pk]\n}\nTable c {\n  id uuid [pk]\n}\nTable d {\n  id uuid [pk]\n}\n`;
+	await page.getByRole('textbox', { name: 'dbml source' }).click();
+	await page.keyboard.press('ControlOrMeta+A');
+	await page.keyboard.press('Delete');
+	await page.keyboard.insertText(src);
+	const nodes = page.locator('.svelte-flow__node-table');
+	await expect(nodes).toHaveCount(4);
+
+	// header: one 48px row, no control wraps onto a second line
+	const bar = await page.locator('header.topbar').boundingBox();
+	expect(bar!.height).toBeLessThanOrEqual(49);
+	for (const loc of [page.locator('.chip'), page.locator('.btn-primary'), page.locator('.seg button'), page.locator('.project-name')]) {
+		for (const b of await loc.evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height))) expect(b).toBeLessThanOrEqual(40);
+	}
+	// nothing is clipped off the right edge
+	const right = await page.locator('header.topbar').evaluate((el) => el.scrollWidth - el.clientWidth);
+	expect(right).toBeLessThanOrEqual(0);
+
+	// the whole schema is fitted on screen once pasted
+	await page.waitForTimeout(600);
+	const boxes = await nodes.evaluateAll((els) => els.map((e) => e.getBoundingClientRect().toJSON()));
+	const pane = await page.locator('.svelte-flow').boundingBox();
+	for (const b of boxes) {
+		expect(b.left).toBeGreaterThanOrEqual(pane!.x - 1);
+		expect(b.right).toBeLessThanOrEqual(pane!.x + pane!.width + 1);
+		expect(b.top).toBeGreaterThanOrEqual(pane!.y - 1);
+		expect(b.bottom).toBeLessThanOrEqual(pane!.y + pane!.height + 1);
+	}
+	for (let i = 0; i < boxes.length; i++)
+		for (let j = i + 1; j < boxes.length; j++) {
+			const a = boxes[i],
+				b = boxes[j];
+			expect(a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom, `${i} overlaps ${j}`).toBe(false);
+		}
+});

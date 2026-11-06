@@ -10,7 +10,7 @@ use std::fmt::Write;
 
 use serde_json::Value;
 
-use crate::erdjson::{GRID_CELL_H, GRID_CELL_W};
+use crate::erdjson::grid_positions;
 use crate::{convert_explicit, detect_format, CoreError, FormatId};
 
 const W: f64 = 220.0;
@@ -208,7 +208,15 @@ pub fn render_svg(doc: &Value, opts: &RenderOptions) -> Option<Svg> {
     if raw.is_empty() {
         return None;
     }
-    let cols_per_row = ((raw.len() as f64).sqrt().ceil() as usize).max(1);
+    let grid = grid_positions(
+        &raw.iter()
+            .map(|v| {
+                v.get("columns")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len)
+            })
+            .collect::<Vec<_>>(),
+    );
     let mut nodes: Vec<Node> = raw
         .iter()
         .enumerate()
@@ -219,10 +227,7 @@ pub fn render_svg(doc: &Value, opts: &RenderOptions) -> Option<Svg> {
                     p.get("x").and_then(Value::as_f64).unwrap_or(0.0),
                     p.get("y").and_then(Value::as_f64).unwrap_or(0.0),
                 ),
-                None => (
-                    ((i % cols_per_row) as i64 * GRID_CELL_W) as f64,
-                    ((i / cols_per_row) as i64 * GRID_CELL_H) as f64,
-                ),
+                None => (grid[i].0 as f64, grid[i].1 as f64),
             };
             let cols = v
                 .get("columns")

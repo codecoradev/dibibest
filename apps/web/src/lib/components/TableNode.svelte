@@ -13,7 +13,7 @@
 	const collapsed = $derived(data.tone === 'dimmed');
 </script>
 
-<article class="erd-node {data.tone}" class:selected aria-label={data.node.name}>
+<article class="erd-node {data.tone}" class:selected class:editable={data.editable} aria-label={data.node.name}>
 	<header>
 		<span class="tbl-icon">▦</span><h3>{data.node.name}</h3>
 		<span class="badge">{data.node.columns.length}c</span>
@@ -137,5 +137,17 @@
 		height: 6px;
 		background: var(--fk);
 		border: none;
+		/* still the anchor of the edges, but only drawn where a drag can start from it */
+		opacity: 0;
+		transition: opacity 120ms;
+	}
+	:global(.erd-node.editable:hover .svelte-flow__handle),
+	:global(.erd-node.selected .svelte-flow__handle) {
+		opacity: 1;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		:global(.erd-node .svelte-flow__handle) {
+			transition: none;
+		}
 	}
 </style>

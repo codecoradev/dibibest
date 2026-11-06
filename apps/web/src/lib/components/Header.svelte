@@ -188,8 +188,8 @@
 			onchange={importChosen}
 		/>
 	</div>
-	<span class="save" class:warn={ws.saveState === 'error' || !ws.persistent} title={ws.persistent ? '' : 'Browser storage is unavailable: projects last for this session only'}>
-		{ws.persistent ? SAVE_LABEL[ws.saveState] : 'Session only'}
+	<span class="save" class:warn={ws.saveState === 'error' || !ws.persistent} class:busy={ws.saveState === 'saving' || ws.saveState === 'unsaved'} title={ws.persistent ? SAVE_LABEL[ws.saveState] : 'Browser storage is unavailable: projects last for this session only'}>
+		<span class="dot" aria-hidden="true"></span><span class="save-text">{ws.persistent ? SAVE_LABEL[ws.saveState] : 'Session only'}</span>
 	</span>
 	<div class="modes">
 		{#if ws.layout === 'text'}
@@ -201,7 +201,7 @@
 		{/if}
 		<div class="seg layout" role="tablist" aria-label="Workspace layout">
 			{#each LAYOUTS as l (l.id)}
-				<button role="tab" aria-selected={ws.layout === l.id} aria-label={l.label.slice(2)} onclick={() => (ws.layout = l.id)}
+				<button role="tab" aria-selected={ws.layout === l.id} aria-label={l.label.slice(2)} title={l.label.slice(2)} onclick={() => (ws.layout = l.id)}
 						><span class="long">{l.label}</span><span class="short">{l.short}</span></button
 					>
 			{/each}
@@ -275,27 +275,50 @@
 		align-items: center;
 		gap: var(--sp-2);
 		font-weight: 650;
+		min-width: 0;
 	}
 	.projects {
 		position: relative;
+		min-width: 0;
 	}
 	.project-name {
 		color: var(--text-2);
 		font-weight: 500;
 		padding: 4px 6px;
 		border-radius: var(--r-sm);
+		display: block;
+		max-width: 240px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.project-name:hover {
 		background: var(--bg-2);
 		color: var(--text-1);
 	}
 	.save {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
 		font-size: 12px;
-		color: var(--text-3, var(--text-2));
+		color: var(--text-3);
 		white-space: nowrap;
+	}
+	.save .dot {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: var(--ok);
+		flex: none;
+	}
+	.save.busy .dot {
+		background: var(--text-3);
 	}
 	.save.warn {
 		color: var(--warn);
+	}
+	.save.warn .dot {
+		background: var(--warn);
 	}
 	.fidelity-wrap {
 		display: contents;
@@ -346,6 +369,7 @@
 		color: var(--text-2);
 	}
 	.link {
+		white-space: nowrap;
 		font-size: 13px;
 		color: var(--text-2);
 		padding: 5px 8px;
@@ -370,6 +394,7 @@
 		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 	}
 	.seg {
+		flex: none;
 		display: flex;
 		gap: 2px;
 		background: var(--bg-2);
@@ -378,6 +403,7 @@
 		padding: 2px;
 	}
 	.seg button {
+		white-space: nowrap;
 		padding: 5px 14px;
 		border-radius: 8px;
 		color: var(--text-2);
@@ -403,6 +429,29 @@
 	.chip .short,
 	.seg .short {
 		display: none;
+	}
+
+	/* Laptop widths: keep one tidy row. Short tab and chip labels, the save state as a dot. */
+	@media (max-width: 1480px) and (min-width: 761px) {
+		.seg .long,
+		.chip .long {
+			display: none;
+		}
+		.seg .short,
+		.chip .short {
+			display: inline;
+		}
+		.save-text {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			overflow: hidden;
+			clip-path: inset(50%);
+			white-space: nowrap;
+		}
+		.who {
+			max-width: 110px;
+		}
 	}
 
 	/* Phones: two rows. Brand, project, fidelity, export and account on top;
@@ -486,6 +535,8 @@
 	.chip {
 		display: inline-flex;
 		align-items: center;
+		white-space: nowrap;
+		flex: none;
 		gap: 6px;
 		font-size: 12.5px;
 		font-weight: 600;
@@ -502,6 +553,7 @@
 		border-color: rgba(245, 181, 68, 0.3);
 	}
 	.btn-primary {
+		white-space: nowrap;
 		background: var(--accent-strong);
 		color: #fff;
 		font-weight: 600;
