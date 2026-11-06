@@ -5,6 +5,7 @@
 //! is first-class: every conversion reports what survived ([`Fidelity`]).
 
 pub mod dbml;
+pub mod diagram;
 pub mod erdjson;
 pub mod ir;
 pub mod prisma;

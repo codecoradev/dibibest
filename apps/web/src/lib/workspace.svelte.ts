@@ -1,8 +1,8 @@
 // The one workspace store. Every layout reads `erd` (ERD-JSON, $state.raw) — there
 // is no second model. Text and canvas edits both end in `analyze`, so what you see
 // is always what the core parsed.
-import { convert, toErd, type ErdDoc, type ErdNode, type Fidelity } from './core';
-import { diagramSvg, svgToPng, type Theme } from './diagram';
+import { convert, renderSvg, toErd, type ErdDoc, type ErdNode, type Fidelity } from './core';
+import { svgToPng } from './diagram';
 import {
 	deleteProject,
 	download,
@@ -227,15 +227,15 @@ class Workspace {
 	}
 
 	/**
-	 * Download the diagram as an image (#60), drawn from the workspace state so
+	 * Download the diagram as an image (#60), drawn by the core from the workspace state so
 	 * it works even when the canvas is not on screen. Explorer-hidden tables are
 	 * left out.
 	 */
-	async exportImage(kind: 'svg' | 'png', theme: Theme = 'dark'): Promise<string | null> {
+	async exportImage(kind: 'svg' | 'png', theme: 'dark' | 'light' = 'dark'): Promise<string | null> {
 		if (!this.erd) return 'nothing to export yet';
-		const hidden = this.layout === 'explorer' ? this.hidden : undefined;
-		const d = diagramSvg(this.erd, { theme, hidden });
-		if (!d) return 'no tables to draw';
+		const hidden = this.layout === 'explorer' ? [...this.hidden] : [];
+		const d = await renderSvg(this.erd, theme, hidden);
+		if (!d.ok) return d.error;
 		const base = `${fileBase(this.projectName)}${theme === 'light' ? '-light' : ''}`;
 		if (kind === 'svg') {
 			download(`${base}.svg`, new Blob([d.svg], { type: 'image/svg+xml;charset=utf-8' }));

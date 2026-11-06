@@ -29,6 +29,9 @@ cat schema.sql | dibibest convert --to dbml
 dibibest convert --to sql:mysql schema.dbml
 dibibest convert --to prisma schema.dbml
 dibibest formats            # dbml, sql, sql:mysql, sql:sqlite, prisma, erdjson
+
+# diagram ERD sebagai gambar SVG
+dibibest render --theme light schema.sql > erd.svg
 ```
 
 Contoh nyata, DBML → SQL:
@@ -122,6 +125,7 @@ API key) setelah versi hosted aktif:
 Tools:
 
 - `convert_schema` (`source`, `from?`, `to`) → output + fidelity
+- `render_diagram` (`source`, `from?`, `theme?` dark/light) → diagram ERD sebagai SVG
 - `list_formats`
 
 Manifest: [server.json](server.json).

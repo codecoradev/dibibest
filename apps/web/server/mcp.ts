@@ -82,6 +82,21 @@ const TOOLS = [
 		}
 	},
 	{
+		name: 'render_diagram',
+		title: 'Render the ERD as SVG',
+		description:
+			'Draw the entity-relationship diagram of a schema as a standalone SVG image (tables, columns with PK/FK, relations). Returns the SVG markup; save it as a .svg file or embed it.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				source: { type: 'string', description: 'Schema source text (DBML, SQL DDL, Prisma schema or ERD-JSON)' },
+				from: { type: 'string', description: 'Source format id; auto-detected when omitted', enum: FORMATS },
+				theme: { type: 'string', description: 'Colour scheme (default dark)', enum: ['dark', 'light'] }
+			},
+			required: ['source']
+		}
+	},
+	{
 		name: 'list_formats',
 		title: 'List supported formats',
 		description:
@@ -102,6 +117,23 @@ async function callTool(name: unknown, args: Record<string, unknown>, core: Core
 		const r = await core({ op: 'formats' });
 		if (!r.ok) return toolError(`error: ${r.error}`);
 		return { content: [{ type: 'text', text: (r.formats ?? []).join('\n') }], isError: false };
+	}
+	if (name === 'render_diagram') {
+		const { source, from, theme } = args;
+		if (
+			typeof source !== 'string' ||
+			(from !== undefined && typeof from !== 'string') ||
+			(theme !== undefined && theme !== 'dark' && theme !== 'light')
+		) {
+			return toolError('error: `source` must be a string, `from` a format id and `theme` dark or light');
+		}
+		const r = await core({ op: 'svg', src: source, from: from ?? 'auto', theme: theme ?? 'dark' });
+		if (!r.ok) return toolError(`error: ${r.error}`);
+		return {
+			content: [{ type: 'text', text: r.svg ?? '' }],
+			structuredContent: { svg: r.svg, width: r.width, height: r.height },
+			isError: false
+		};
 	}
 	if (name === 'convert_schema') {
 		const { source, from, to } = args;

@@ -5,9 +5,12 @@
 //! Request (JSON): `{"op":"erd"|"convert","src":..,"from":..,"to":..}`; `from` may
 //! be `"auto"` to use the core's format detection (file import).
 //! `{"op":"formats"}` lists the registry's format ids as `{"ok":true,"formats":[..]}`.
+//! `{"op":"svg","erd":<ERD-JSON>|"src":..,"from":..,"theme":"dark"|"light","hidden":[ids]}`
+//! draws the diagram: `{"ok":true,"svg":..,"width":..,"height":..}`.
 //! Response (JSON): `{"ok":true,"output":..,"fidelity":{..},"from":..}` or
 //! `{"ok":false,"error":..}`. `from` echoes the format actually used.
 
+use dibibest_core::diagram::{render_source, render_svg, RenderOptions, Theme};
 use dibibest_core::erdjson::{apply_layout, LayoutStrategy};
 use dibibest_core::{default_registry, detect_format, FormatId};
 use serde::Deserialize;
@@ -22,6 +25,13 @@ struct Req {
     from: String,
     #[serde(default)]
     to: Option<String>,
+    /// `svg`: an ERD-JSON document with canvas positions (instead of `src`).
+    #[serde(default)]
+    erd: Option<Value>,
+    #[serde(default)]
+    theme: Option<String>,
+    #[serde(default)]
+    hidden: Vec<String>,
 }
 
 /// `erd`: source → ERD-JSON with grid layout applied (`output` is the document).
@@ -41,6 +51,24 @@ fn run_req(r: Req) -> Result<Value, String> {
     let reg = default_registry();
     if r.op == "formats" {
         return Ok(json!({"ok": true, "formats": reg.ids()}));
+    }
+    if r.op == "svg" {
+        let theme = match r.theme.as_deref() {
+            None => Theme::Dark,
+            Some(t) => Theme::parse(t).ok_or(format!("unknown theme: {t}"))?,
+        };
+        let opts = RenderOptions {
+            theme,
+            hidden: r.hidden.into_iter().collect(),
+        };
+        let svg = match &r.erd {
+            Some(doc) => render_svg(doc, &opts).ok_or("no tables to draw")?,
+            None => {
+                let from = (!r.from.is_empty() && r.from != "auto").then_some(r.from.as_str());
+                render_source(&r.src, from, &opts).map_err(|e| e.to_string())?
+            }
+        };
+        return Ok(json!({"ok": true, "svg": svg.svg, "width": svg.width, "height": svg.height}));
     }
     let from_id = if r.from == "auto" {
         detect_format(&r.src)
@@ -141,6 +169,26 @@ mod tests {
             .map(|v| v.as_str().unwrap())
             .collect();
         assert!(ids.contains(&"dbml") && ids.contains(&"sql:mysql"));
+    }
+
+    #[test]
+    fn draws_svg_from_a_document_or_from_source() {
+        let doc = json!({"version":1,"nodes":[{"id":"a","name":"a","position":{"x":0,"y":0},
+            "columns":[{"name":"id","type":"int","isPk":true}]}],"edges":[],"meta":{"layout":null}});
+        let r = call(json!({"op":"svg","erd":doc,"theme":"light"}));
+        assert_eq!(r["ok"], true);
+        assert!(r["svg"].as_str().unwrap().contains(">a<"));
+        assert_eq!(r["width"], 300);
+        let r = call(json!({"op":"svg","src":"Table t {\n  id int [pk]\n}\n","from":"auto"}));
+        assert!(r["svg"].as_str().unwrap().contains(">t<"));
+        assert_eq!(
+            call(json!({"op":"svg","erd":doc,"theme":"pink"}))["ok"],
+            false
+        );
+        assert_eq!(
+            call(json!({"op":"svg","erd":doc,"hidden":["a"]}))["ok"],
+            false
+        );
     }
 
     #[test]

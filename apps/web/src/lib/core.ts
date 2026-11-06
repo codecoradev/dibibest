@@ -94,5 +94,11 @@ async function call(req: object): Promise<Result> {
 
 /** source text → ERD-JSON (grid-laid-out) + fidelity. `from: 'auto'` detects the format (echoed in `from`). */
 export const toErd = (src: string, from: string) => call({ op: 'erd', src, from });
+export type SvgResult = { ok: true; svg: string; width: number; height: number } | { ok: false; error: string };
+
+/** The diagram as SVG, drawn by the core (dibibest_core::diagram), from canvas state. */
+export const renderSvg = (erd: ErdDoc, theme: 'dark' | 'light', hidden: string[] = []) =>
+	call({ op: 'svg', erd, theme, hidden }) as unknown as Promise<SvgResult>;
+
 /** source text → another format + fidelity. */
 export const convert = (src: string, from: string, to: string) => call({ op: 'convert', src, from, to });

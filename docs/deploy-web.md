@@ -71,7 +71,8 @@ configured for `client_secret_post` instead, set `OIDC_TOKEN_AUTH = "post"` in
 
 ## Remote MCP (`/mcp`)
 
-The same tools as the local stdio server (`convert_schema`, `list_formats`),
+The same tools as the local stdio server (`convert_schema`, `render_diagram`,
+`list_formats`),
 running the core compiled to WASM inside a Pages Function. Client config:
 
 ```json

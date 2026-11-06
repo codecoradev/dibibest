@@ -73,6 +73,8 @@ jobs:
           echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | ./target/debug/dibibest-mcp | grep -q 'convert_schema'
           echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"convert_schema","arguments":{"source":"Table a { id integer [pk] }","to":"sql"}}}' \
             | ./target/debug/dibibest-mcp | grep -q '"isError":false'
+          echo '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"render_diagram","arguments":{"source":"Table a { id integer [pk] }"}}}' \
+            | ./target/debug/dibibest-mcp | grep -q '<svg xmlns'
 
   web-check:
     name: Web Check
