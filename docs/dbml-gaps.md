@@ -45,11 +45,24 @@ Corpus: `crates/dibibest-core/tests/corpus/*.dbml`, gate ≥95% in
 | Multi-line notes | `Note: '''line 1`<br>`line 2'''` |
 | Table `Note { … }` block | `Note { 'text' }` inside a table |
 | Top-level sticky notes | `Note my_note { 'text' }` |
-| Many-to-many ref | `Ref: a.id <> b.id` |
+| Many-to-many ref | `Ref: a.id <> b.id`, also with `?` (`?<>?`): "many-to-many `<>` relationships are not supported" |
 | Checks blocks | `checks { `price > 0` }` |
 | `TablePartial` / `~partial` injection | `TablePartial base { id int }` |
 | Top-level `Records` / data blocks | `Records users(id) { 1 }` |
 | Quoted identifiers containing `.` or `"` | `Table "a.b" {` is read as schema `a`, table `b` |
+
+## Optional relationships (`?`)
+
+dbdiagram's optional relationships ([Aug 2026](https://docs.dbdiagram.io/release-notes/2026-08-optional-relationships/)):
+a `?` next to the operator marks that side optional, e.g. `posts.user_id ?> users.id`,
+`users.id <? follows.user_id`, `a.b ?-? c.d`, inline `[ref: ?> t.id]`.
+
+- Modeled in the IR (`Ref.optional_from` / `optional_to`) and round-trip losslessly
+  in DBML and ERD-JSON (`fromOptional` / `toOptional`); the canvas and the
+  diagram image draw them dashed.
+- SQL and Prisma have no equivalent (optionality there only follows from a
+  nullable column): the refs convert, and the fidelity report lists the
+  dropped `?` markers by ref.
 
 ## Fidelity caveats to know
 

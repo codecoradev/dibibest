@@ -63,7 +63,8 @@
 					target: e.to.table,
 					sourceHandle: `${e.from.columns[0]}-s`,
 					targetHandle: `${e.to.columns[0]}-t`,
-					style: `stroke: ${hot ? '#b48cff' : '#3a4250'}; stroke-width: 1.6`,
+					// optional relationship (DBML `?`) = dashed, like dbdiagram
+					style: `stroke: ${hot ? '#b48cff' : '#3a4250'}; stroke-width: 1.6${e.fromOptional || e.toOptional ? '; stroke-dasharray: 6 4' : ''}`,
 					markerEnd: { type: MarkerType.ArrowClosed, color: hot ? '#b48cff' : '#3a4250' }
 				};
 			});

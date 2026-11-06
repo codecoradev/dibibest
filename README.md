@@ -160,7 +160,7 @@ bertanda tangan). Setup dan deploy: [docs/deploy-web.md](docs/deploy-web.md).
 
 | Format | Parse | Emit | Catatan |
 |---|---|---|---|
-| DBML (dbdiagram) | ✓ | ✓ | Table/column + settings, indexes, Ref (`>` `<` `-`, composite, inline, blocks, `delete`/`update`), Enum, Project. Lihat [docs/dbml-gaps.md](docs/dbml-gaps.md) |
+| DBML (dbdiagram) | ✓ | ✓ | Table/column + settings, indexes, Ref (`>` `<` `-`, opsional `?`, composite, inline, blocks, `delete`/`update`), Enum, Project. Lihat [docs/dbml-gaps.md](docs/dbml-gaps.md) |
 | SQL: PostgreSQL (`sql`) | ✓ | ✓ | via sqlparser-rs; `CREATE TABLE`/`INDEX`/`TYPE … AS ENUM`, FK + `ON DELETE`/`ON UPDATE`. Autoincrement belum ditulis (lihat bawah) |
 | SQL: MySQL (`sql:mysql`) | ✓ | ✓ | backtick quoting, `AUTO_INCREMENT`; enum tidak ditulis (dilaporkan `dropped`). Lihat [docs/sql-dialects.md](docs/sql-dialects.md) |
 | SQL: SQLite (`sql:sqlite`) | ✓ | ✓ | `AUTOINCREMENT`; enum tidak ditulis (dilaporkan `dropped`) |

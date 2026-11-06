@@ -309,6 +309,14 @@ pub struct Ref {
     /// Referential action on update, same vocabulary as `on_delete`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_update: Option<String>,
+    /// The `from` side may have no matching row (DBML `?>` / `?-`, dbdiagram
+    /// optional relationships). Presentation-level: SQL and Prisma express
+    /// optionality through nullability only, so they report it as dropped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional_from: bool,
+    /// The `to` side may have no matching row (DBML `>?` / `<?`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional_to: bool,
 }
 
 /// Normalize a referential action from any codec's spelling (`CASCADE`,

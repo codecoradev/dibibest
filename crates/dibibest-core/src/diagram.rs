@@ -300,11 +300,24 @@ pub fn render_svg(doc: &Value, opts: &RenderOptions) -> Option<Svg> {
         let (Some((src, sc)), Some((dst, dc))) = (end("from"), end("to")) else {
             continue;
         };
+        // optional relationship (DBML `?`) = dashed, as on the canvas
+        let optional = e
+            .get("fromOptional")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || e.get("toOptional")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
         let _ = write!(
             out,
-            r#"<path d="{}" fill="none" stroke="{}" stroke-width="1.6" marker-end="url(#arrow)"/>"#,
+            r#"<path d="{}" fill="none" stroke="{}" stroke-width="1.6"{} marker-end="url(#arrow)"/>"#,
             bezier(src.x + W, src.row_y(&sc), dst.x, dst.row_y(&dc)),
-            p.fk
+            p.fk,
+            if optional {
+                r#" stroke-dasharray="6 4""#
+            } else {
+                ""
+            }
         );
     }
 

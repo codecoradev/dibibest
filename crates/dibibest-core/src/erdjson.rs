@@ -90,6 +90,20 @@ struct Edge {
     on_delete: Option<String>,
     #[serde(rename = "onUpdate", default, skip_serializing_if = "Option::is_none")]
     on_update: Option<String>,
+    /// DBML `?` on the `from` side (optional relationship).
+    #[serde(
+        rename = "fromOptional",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    from_optional: bool,
+    /// DBML `?` on the `to` side.
+    #[serde(
+        rename = "toOptional",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    to_optional: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -149,6 +163,7 @@ impl Codec for ErdJsonCodec {
             enums: true,
             defaults: true,
             notes: true,
+            optional_refs: true,
             dialects: &[],
         }
     }
@@ -217,6 +232,8 @@ impl Codec for ErdJsonCodec {
                 label: r.name.clone(),
                 on_delete: r.on_delete.clone(),
                 on_update: r.on_update.clone(),
+                from_optional: r.optional_from,
+                to_optional: r.optional_to,
             })
             .collect();
         let key = |e: &Edge| {
@@ -309,6 +326,8 @@ impl Codec for ErdJsonCodec {
                 name: e.label.clone(),
                 on_delete: edge_action(e, "onDelete", &e.on_delete)?,
                 on_update: edge_action(e, "onUpdate", &e.on_update)?,
+                optional_from: e.from_optional,
+                optional_to: e.to_optional,
             });
         }
         ir.enums = doc.enums;

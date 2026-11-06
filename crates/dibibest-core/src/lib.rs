@@ -46,6 +46,8 @@ pub struct Caps {
     pub enums: bool,
     pub defaults: bool,
     pub notes: bool,
+    /// Optional relationship markers (DBML `?`), see `Ref::optional_from`.
+    pub optional_refs: bool,
     pub dialects: &'static [&'static str],
 }
 

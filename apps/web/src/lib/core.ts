@@ -42,6 +42,9 @@ export type ErdEdge = {
 	label?: string;
 	onDelete?: RefAction;
 	onUpdate?: RefAction;
+	/** DBML `?` (optional relationship) on that side. */
+	fromOptional?: boolean;
+	toOptional?: boolean;
 };
 /** ERD-JSON v1 (docs/erdjson-schema.md) — the single workspace state. */
 export type ErdDoc = {

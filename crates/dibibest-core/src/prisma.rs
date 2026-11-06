@@ -36,6 +36,7 @@ impl Codec for PrismaCodec {
             enums: true,
             defaults: true,
             notes: true,
+            optional_refs: false,
             dialects: &[],
         }
     }
@@ -738,6 +739,8 @@ fn resolve(
                 name,
                 on_delete: named(rel, "onDelete").and_then(|a| normalize_action(&a)),
                 on_update: named(rel, "onUpdate").and_then(|a| normalize_action(&a)),
+                optional_from: false,
+                optional_to: false,
             });
         }
         ir.tables.push(t);

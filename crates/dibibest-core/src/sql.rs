@@ -104,6 +104,7 @@ impl Codec for SqlCodec {
             enums,
             defaults: true,
             notes: false, // COMMENT ON: R2
+            optional_refs: false,
             dialects,
         }
     }
@@ -158,6 +159,8 @@ impl Codec for SqlCodec {
                                     name: None,
                                     on_delete: action(&fk.on_delete),
                                     on_update: action(&fk.on_update),
+                                    optional_from: false,
+                                    optional_to: false,
                                 }),
                                 _ => {}
                             }
@@ -187,6 +190,8 @@ impl Codec for SqlCodec {
                                 name: None,
                                 on_delete: action(&fk.on_delete),
                                 on_update: action(&fk.on_update),
+                                optional_from: false,
+                                optional_to: false,
                             }),
                             _ => {}
                         }
