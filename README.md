@@ -140,6 +140,13 @@ cd apps/web && bun install && bun run dev
 Three layouts (text-first, canvas-first, explorer) over a single ERD-JSON;
 conversions run through the same core, compiled to WASM. Nothing is uploaded.
 
+The text editor helps as you write: `{ }`, `( )`, `[ ]` and quotes close
+themselves and Enter indents the new line. **Tab** accepts a suggestion (column
+types such as `int` → `integer`, the document's enums and table names, settings
+like `pk` and `not null`, `table.column` in a `Ref`) or indents; **Esc, then Tab**
+leaves the editor. **Format** (Shift+Alt+F) tidies indentation, trailing spaces
+and blank lines without changing the content or the comments.
+
 Projects are stored in the browser (IndexedDB), with no account and no server:
 create, open, rename, and delete them from the project-name menu at the top
 left. **Import** a `.dbml`, `.sql`, `.prisma`, or ERD-JSON file (`.json`, canvas
