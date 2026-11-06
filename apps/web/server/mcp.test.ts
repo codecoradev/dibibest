@@ -212,7 +212,7 @@ describe('transport', () => {
 		expect((await handleMcp(post(big, auth), ENV, core, fetcher)).status).toBe(413);
 	});
 
-	test('server/discover under a newer protocol gets -32601 with 200, so clients fall back to initialize', async () => {
+	test('modern requests (2026-07-28) get a 4xx without a modern error, so dual-era clients fall back to initialize', async () => {
 		// Claude opens with server/discover (MCP 2026-07-28) before initialize
 		const auth = { authorization: `Bearer ${await jwt()}`, 'mcp-protocol-version': '2026-07-28' };
 		const discover = await handleMcp(
@@ -221,16 +221,26 @@ describe('transport', () => {
 			core,
 			fetcher
 		);
-		expect(discover.status).toBe(200);
-		expect(((await discover.json()) as any).error.code).toBe(-32601);
+		expect(discover.status).toBe(400);
+		const err = ((await discover.json()) as any).error;
+		expect(err.code).toBe(-32600); // not in the modern range -32020..-32099
+		// a modern tools/list (per-request _meta) is refused the same way
+		const modernList = await handleMcp(
+			post({ jsonrpc: '2.0', id: 9, method: 'tools/list', params: { _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' } } }, auth),
+			ENV,
+			core,
+			fetcher
+		);
+		expect(modernList.status).toBe(400);
+		const legacy = { authorization: auth.authorization };
 		const init = await handleMcp(
-			post({ jsonrpc: '2.0', id: 2, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'claude-ai', version: '0.1' } } }, auth),
+			post({ jsonrpc: '2.0', id: 2, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'claude-ai', version: '0.1' } } }, legacy),
 			ENV,
 			core,
 			fetcher
 		);
 		expect(((await init.json()) as any).result.protocolVersion).toBe('2025-06-18');
-		const list = await handleMcp(post({ jsonrpc: '2.0', id: 3, method: 'tools/list' }, { ...auth, 'mcp-protocol-version': '2025-06-18' }), ENV, core, fetcher);
+		const list = await handleMcp(post({ jsonrpc: '2.0', id: 3, method: 'tools/list' }, { ...legacy, 'mcp-protocol-version': '2025-06-18' }), ENV, core, fetcher);
 		expect(((await list.json()) as any).result.tools).toHaveLength(3);
 	});
 

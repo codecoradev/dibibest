@@ -62,6 +62,17 @@ function unauthorized(req: Request, error?: string): Response {
 type RpcId = string | number | null;
 type RpcMessage = { jsonrpc?: string; id?: RpcId; method?: unknown; params?: unknown; result?: unknown; error?: unknown };
 
+const MODERN_META = 'io.modelcontextprotocol/protocolVersion';
+
+/** A request in the stateless MCP era (2026-07-28+): server/discover or per-request version metadata. */
+function isModern(req: Request, rpc: RpcMessage): boolean {
+	if (rpc.method === 'server/discover') return true;
+	const meta = (rpc.params as { _meta?: Record<string, unknown> } | undefined)?._meta;
+	if (meta && typeof meta === 'object' && MODERN_META in meta) return true;
+	const header = req.headers.get('mcp-protocol-version');
+	return !!header && header >= '2026-' && !PROTOCOL_VERSIONS.includes(header);
+}
+
 const rpcResult = (id: RpcId, result: unknown) => ({ jsonrpc: '2.0', id, result });
 const rpcError = (id: RpcId, code: number, message: string) => ({ jsonrpc: '2.0', id, error: { code, message } });
 
@@ -243,10 +254,9 @@ async function serve(req: Request, env: Env, core: Core, fetcher: Fetch): Promis
 		return json({ error: 'the identity provider cannot be reached right now' }, 503, { 'retry-after': '30' });
 	}
 
-	// No MCP-Protocol-Version gate: the version is negotiated in `initialize`.
-	// Claude opens with `server/discover` under the 2026-07-28 protocol and falls
-	// back to `initialize` only on a JSON-RPC -32601 answer; an HTTP 400 for the
-	// unknown header version stopped it before tools/list (#67).
+	// The version is negotiated in `initialize` (legacy MCP, 2025-11-25 and
+	// earlier). Modern requests (2026-07-28) are answered below with a 4xx, which
+	// is the spec's signal for a dual-era client such as Claude to fall back.
 	const length = Number(req.headers.get('content-length') ?? 0);
 	if (length > MAX_BODY_BYTES) return json(rpcError(null, -32600, 'request too large'), 413);
 	const text = await req.text();
@@ -266,6 +276,17 @@ async function serve(req: Request, env: Env, core: Core, fetcher: Fetch): Promis
 	// notifications (no id) and client responses get no body
 	if (rpc.method === undefined || rpc.id === undefined) return new Response(null, { status: 202 });
 	if (typeof rpc.method !== 'string') return json(rpcError(rpc.id ?? null, -32600, 'invalid request'), 400);
+	if (isModern(req, rpc)) {
+		// MCP 2026-07-28, "Backward Compatibility": on Streamable HTTP a dual-era
+		// client falls back to `initialize` when a modern request gets a 4xx whose
+		// body is not a modern error (-32020..-32099). A 200 here made Claude treat
+		// this server as modern, so it never listed the tools (#69).
+		console.log(`mcp: ${rpc.method} (modern) -> 400, legacy only`);
+		return json(
+			rpcError(rpc.id ?? null, -32600, `this server speaks MCP ${PROTOCOL_VERSIONS.join(', ')}; call initialize`),
+			400
+		);
+	}
 	const reply = (await dispatch(rpc, core)) as { error?: { code: number } };
 	console.log(`mcp: ${rpc.method}${reply.error ? ` -> ${reply.error.code}` : ''}`);
 	return json(reply);
