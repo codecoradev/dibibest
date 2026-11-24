@@ -6,6 +6,7 @@ members = [
     "crates/dibibest-mcp",
     "crates/dibibest-wasm",
     "crates/dibibest-store",
+    "crates/dibibest-server",
 ]
 
 [workspace.package]

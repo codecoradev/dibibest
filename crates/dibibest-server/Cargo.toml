@@ -1,0 +1,29 @@
+[package]
+name = "dibibest-server"
+description = "The dibibest server: one process behind one origin (web app, API, live WebSocket, MCP)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "dibibest-server"
+path = "src/main.rs"
+
+[dependencies]
+dibibest-store = { path = "../dibibest-store" }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "fs"] }
+tower-http = { version = "0.6", features = ["limit"] }
+mime_guess = "2"
+percent-encoding = "2"
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util"] }
+tower = { version = "0.5", features = ["util"] }
+tempfile = "3"
