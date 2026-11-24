@@ -118,8 +118,9 @@ already mounts them, so a stage adds routes without editing the composition in `
   - Not covered: how slowly a client *reads* a response (there is no write timeout, so a client that never reads holds
     its connection and its place), and one address opening all the places (the cap is global, not per address).
 - **Shutdown** (SIGTERM or Ctrl-C; a handler that cannot be installed is logged and never counts as a shutdown request):
-  stop taking connections and tell every open one to finish (a request in flight is answered, an idle connection is
-  closed at once), wait up to `DIBIBEST_SHUTDOWN_GRACE_SECS`, then drop whatever is still open (a slow request, a client
+  stop taking connections and tell every open one to finish (a request in flight is answered, a kept-alive connection
+  that is between requests is closed at once, and a fresh one that has sent nothing yet is waited for like a request in
+  flight, because hyper cannot tell it from a slow one), wait up to `DIBIBEST_SHUTDOWN_GRACE_SECS`, then drop whatever is still open (a slow request, a client
   still sending headers). Only then does the store flush its writer and the lock go; exit 0.
 - **Configuration** is environment only: `DIBIBEST_ADDR` (default `127.0.0.1:8080`), `DIBIBEST_DATA_DIR`,
   `DIBIBEST_WEB_DIR`, `DIBIBEST_TRUSTED_PROXIES`, `DIBIBEST_RATE_PER_MINUTE`, `DIBIBEST_MAX_BODY_BYTES`,

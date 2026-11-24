@@ -142,7 +142,9 @@ impl Bound {
 /// cost of a client that opens many: the cap bounds it, and the timeout ends each one.
 ///
 /// When `shutdown` completes the listener is dropped and every connection is told to finish: a request in flight
-/// is answered, an idle connection is closed at once. After `grace`, whatever is still open is dropped. The
+/// is answered, an idle connection that has completed a request is closed at once, and one that has sent nothing
+/// yet is treated as a request in flight (hyper cannot tell it from a slow one) and waited for. After `grace`,
+/// whatever is still open is dropped. The
 /// connection tasks are all gone, and with them their copies of `app`, when this returns.
 ///
 /// Only HTTP/1.1 is spoken: the server sits behind a reverse proxy that terminates TLS and talks HTTP/1.1 to it,
@@ -159,7 +161,12 @@ pub async fn serve_until(
     let (drain_tx, drain_rx) = watch::channel(());
     let mut connections = JoinSet::new();
     let mut shutdown = std::pin::pin!(shutdown);
-    let room = Arc::new(Semaphore::new(max_connections));
+    // 0 would never accept anything, and more than the semaphore can hold would panic: both are put in range
+    // here because this function is public (the configuration is checked already, so this only matters to a caller
+    // that skips it).
+    let room = Arc::new(Semaphore::new(
+        max_connections.clamp(1, Semaphore::MAX_PERMITS),
+    ));
     loop {
         // A place first, then the connection: at the cap nothing is accepted, and the next connection waits in the
         // queue of the operating system (and is refused there once that is full) instead of being held here.

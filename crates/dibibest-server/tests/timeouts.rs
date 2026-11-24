@@ -12,7 +12,6 @@ use dibibest_server::app::{router_with, AppState};
 use dibibest_server::config::Config;
 use dibibest_server::{bind, serve_until, ServerError};
 use dibibest_store::SqliteStore;
-use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -440,6 +439,10 @@ async fn the_handler_sees_the_address_the_connection_came_from() {
 /// really is given the address of each connection: without it every client is counted as 127.0.0.1.
 #[tokio::test]
 async fn the_rate_limiter_is_given_each_clients_own_address() {
+    if std::net::TcpListener::bind("[::1]:0").is_err() {
+        eprintln!("skipped: this machine has no IPv6 loopback");
+        return;
+    }
     let mut server = start(|c| {
         c.addr = "[::]:0".parse().unwrap();
         c.rate_per_minute = 1;
@@ -667,10 +670,7 @@ async fn shutdown_cuts_off_a_client_that_is_still_sending_its_headers() {
 }
 
 #[allow(dead_code)]
-fn assert_send<F: Future + Send>(_: &F) {}
-
 // ── the cap on open connections ─────────────────────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn connections_over_the_cap_wait_to_be_accepted_until_one_closes() {
     let mut server = start(|c| c.max_connections = 2).await;
@@ -720,4 +720,21 @@ async fn a_server_at_its_cap_still_stops_when_told_to() {
         .unwrap();
     server.stop();
     server.finished().await;
+}
+
+#[tokio::test]
+async fn a_cap_of_zero_or_beyond_what_a_semaphore_holds_is_put_in_range_not_a_hang_or_a_panic() {
+    for cap in [0, usize::MAX] {
+        let mut server = start(|c| c.max_connections = cap).await;
+        let (reply, _) = {
+            let mut s = TcpStream::connect(server.addr).await.unwrap();
+            s.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            until_closed(&mut s).await
+        };
+        assert!(reply.starts_with("HTTP/1.1 200"), "cap {cap}: {reply}");
+        server.stop();
+        server.finished().await;
+    }
 }
