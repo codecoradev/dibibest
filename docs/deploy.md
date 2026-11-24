@@ -62,10 +62,12 @@ variables, a value that is only a placeholder (`...`, `xxx`, `changeme`, `todo`)
 | `DIBIBEST_OIDC_TOKEN_AUTH` | `basic` | `basic` | `basic` (`client_secret_basic`) or `post` (`client_secret_post`). |
 | `RUST_LOG` | `info` | `info` | Log filter (not a `DIBIBEST_` variable). |
 
-Sign-in is **all or nothing**: the issuer, client id, client secret and session secret are set together, or none of
-them. A half is a start-up error, and so is sign-in without `DIBIBEST_PUBLIC_URL`. With none set the server runs
-without sign-in. Put the secrets in the `.env` next to the compose file, never in the compose file or the repository.
-This repository's `.gitignore` does not list `.env`: do not `git add` it (or add `.env` to `.gitignore`).
+Sign-in is **all or nothing**: the client id, client secret and session secret are set together with the issuer, or none
+of them. A half is a start-up error, and so is any identity provider setting without `DIBIBEST_PUBLIC_URL`. The issuer
+on its own (with the public URL) is allowed and turns on the remote MCP endpoint (`/mcp` and the `/.well-known/*`
+documents) without sign-in. With none set the server runs without either. Put the secrets in the `.env` next to the
+compose file, never in the compose file or the repository; this repository's `.gitignore` lists `.env`, but do not
+`git add -f` it.
 
 ### Gatehouse client
 
@@ -117,6 +119,9 @@ Expect a short gap in service; `docker stop` took well under a second when idle 
 The image has a `HEALTHCHECK` on `/healthz` (liveness). `/readyz` is readiness (the store answers, WAL is on, the disk is
 not full); the compose file does not gate on it, but a monitor should watch it. The container was `healthy` when checked
 about 15 to 20 seconds after the start (interval 15 s, start period 10 s), under plain `docker run` and under compose.
+
+With plain `docker run` (no compose), pass `--stop-timeout 30`: Docker's default of 10 seconds kills the process before the
+20-second shutdown grace is over, and a request in flight is cut off.
 
 ## Rollback
 

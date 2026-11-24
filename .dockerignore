@@ -22,13 +22,13 @@ apps/web/tests
 apps/web/wrangler.toml
 
 # Local state and secrets
-.env
-.env.*
+**/.env
+**/.env.*
 **/.dev.vars
-*.db
-*.db-wal
-*.db-shm
-*.local.*
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.local.*
 scratch
 Cargo.lock.bak
 

@@ -3,7 +3,7 @@
 # dibibest server image: ONE container holding the Rust server and the built web app.
 #
 #   docker build -t dibibest .
-#   docker run --rm -p 8080:8080 -v dibibest-data:/data dibibest
+#   docker run --rm -p 8080:8080 -v dibibest-data:/data --stop-timeout 30 dibibest
 #
 # Stages:
 #   web      builds the WASM core, then the static web app (apps/web -> build/)

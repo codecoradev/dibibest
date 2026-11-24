@@ -24,7 +24,9 @@ services:
 
     # Secrets and per-site values live in `.env` (not committed): DIBIBEST_PUBLIC_URL, DIBIBEST_OIDC_ISSUER,
     # DIBIBEST_OIDC_CLIENT_ID, DIBIBEST_OIDC_CLIENT_SECRET, DIBIBEST_SESSION_SECRET. A blank value counts as unset.
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false # without it the server runs with no sign-in and no MCP
 
     # Not secret, safe to keep in this file. The image already sets ADDR, DATA_DIR and WEB_DIR.
     environment:
@@ -71,3 +73,6 @@ networks:
 
 volumes:
   dibibest-data:
+    # An explicit name, so that it is not prefixed with the project name and `docker run -v dibibest-data:/data`
+    # (backups, restores) mounts the very volume the service uses.
+    name: dibibest-data
