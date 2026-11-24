@@ -442,3 +442,172 @@ async fn a_document_that_is_not_a_provider_description_is_not_accepted_and_nothi
         .await
         .is_none());
 }
+
+fn rfc8414_doc(idp: &Idp, extra: serde_json::Value) -> serde_json::Value {
+    let base = idp.issuer();
+    let mut doc = json!({
+        "issuer": base,
+        "authorization_endpoint": format!("{base}/oauth2/authorize"),
+        "token_endpoint": format!("{base}/oauth2/token"),
+        "jwks_uri": format!("{base}/jwks"),
+    });
+    for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+        doc[k] = v;
+    }
+    doc
+}
+
+#[tokio::test]
+async fn the_rfc_8414_document_is_preferred_and_the_openid_one_is_the_fallback() {
+    let idp = Idp::start().await;
+    idp.set(
+        "as_metadata",
+        Answer::ok(rfc8414_doc(&idp, json!({"served_from": "rfc8414"}))),
+    );
+    let got = provider(&idp)
+        .authorization_server_metadata()
+        .await
+        .unwrap();
+    assert_eq!(got["served_from"], "rfc8414");
+    assert!(
+        idp.calls_to("/.well-known/openid-configuration").is_empty(),
+        "the second address is not asked when the first answers"
+    );
+
+    // the first address failing falls through to the second
+    let idp = Idp::start().await; // as_metadata answers 404 by default
+    assert!(provider(&idp)
+        .authorization_server_metadata()
+        .await
+        .is_some());
+    assert_eq!(idp.calls_to("/.well-known/openid-configuration").len(), 1);
+}
+
+#[tokio::test]
+async fn a_document_that_claims_another_issuer_is_not_served() {
+    // RFC 8414 section 3.3: the issuer in the document must be the one it was fetched for
+    let idp = Idp::start().await;
+    idp.set(
+        "as_metadata",
+        Answer::ok(rfc8414_doc(
+            &idp,
+            json!({"issuer": "https://evil.example/api/auth"}),
+        )),
+    );
+    idp.set(
+        "discovery",
+        Answer::ok(rfc8414_doc(
+            &idp,
+            json!({"issuer": "https://evil.example/api/auth"}),
+        )),
+    );
+    assert!(
+        provider(&idp)
+            .authorization_server_metadata()
+            .await
+            .is_none(),
+        "both documents name another issuer"
+    );
+
+    // one wrong, one right: the right one is the answer
+    let idp = Idp::start().await;
+    idp.set(
+        "as_metadata",
+        Answer::ok(rfc8414_doc(
+            &idp,
+            json!({"issuer": "https://evil.example/api/auth"}),
+        )),
+    );
+    let got = provider(&idp)
+        .authorization_server_metadata()
+        .await
+        .expect("the OpenID document is fine");
+    assert_eq!(got["issuer"], idp.issuer());
+
+    // a trailing slash on the issuer in the document is the same issuer
+    let idp = Idp::start().await;
+    let with_slash = format!("{}/", idp.issuer());
+    idp.set(
+        "discovery",
+        Answer::ok(rfc8414_doc(&idp, json!({"issuer": with_slash}))),
+    );
+    assert!(provider(&idp)
+        .authorization_server_metadata()
+        .await
+        .is_some());
+}
+
+#[tokio::test]
+async fn a_document_that_names_an_address_the_server_would_not_use_is_not_served() {
+    // an address that is not even text
+    let idp = Idp::start().await;
+    idp.set(
+        "discovery",
+        Answer::ok(rfc8414_doc(&idp, json!({"token_endpoint": 5}))),
+    );
+    assert!(
+        provider(&idp)
+            .authorization_server_metadata()
+            .await
+            .is_none(),
+        "token_endpoint=5"
+    );
+    for (field, bad) in [
+        ("authorization_endpoint", "http://evil.example/authorize"),
+        ("token_endpoint", "https://user:pass@idp.example/token"),
+        ("jwks_uri", "http://169.254.169.254/keys"),
+        ("registration_endpoint", "ftp://idp.example/register"),
+    ] {
+        let idp = Idp::start().await;
+        idp.set(
+            "discovery",
+            Answer::ok(rfc8414_doc(&idp, json!({field: bad}))),
+        );
+        assert!(
+            provider(&idp)
+                .authorization_server_metadata()
+                .await
+                .is_none(),
+            "{field}={bad}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn while_the_provider_is_down_the_old_copy_is_served_without_asking_again_every_time() {
+    let idp = Idp::start().await;
+    let p = Provider::with_ttl(
+        &idp.issuer(),
+        client(Duration::from_secs(5)),
+        Duration::from_millis(50),
+    );
+    assert!(p.authorization_server_metadata().await.is_some());
+    idp.set(
+        "discovery",
+        Answer {
+            status: 500,
+            ..Answer::ok(json!({}))
+        },
+    );
+    tokio::time::sleep(Duration::from_millis(120)).await;
+
+    assert!(
+        p.authorization_server_metadata().await.is_some(),
+        "the first call after the outage tries and serves the old copy"
+    );
+    let asked = idp.calls_to("/.well-known/openid-configuration").len()
+        + idp
+            .calls_to("/.well-known/oauth-authorization-server")
+            .len();
+    for _ in 0..10 {
+        assert!(p.authorization_server_metadata().await.is_some());
+    }
+    let after = idp.calls_to("/.well-known/openid-configuration").len()
+        + idp
+            .calls_to("/.well-known/oauth-authorization-server")
+            .len();
+    assert_eq!(
+        after, asked,
+        "a failed refresh must not be retried by every request"
+    );
+}

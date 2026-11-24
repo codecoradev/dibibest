@@ -17,6 +17,18 @@ use url::Url;
 const DISCOVERY_TTL: Duration = Duration::from_secs(3600);
 /// How long the provider's own metadata document is kept before it is fetched again.
 const METADATA_TTL: Duration = Duration::from_secs(300);
+/// After a refresh failed and the old copy was served instead, how long before the next attempt: a provider that
+/// is down must not be asked again by every request.
+const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(30);
+/// The addresses in a metadata document that are checked before the document is handed to a client.
+const METADATA_URL_FIELDS: [&str; 6] = [
+    "authorization_endpoint",
+    "token_endpoint",
+    "jwks_uri",
+    "userinfo_endpoint",
+    "registration_endpoint",
+    "revocation_endpoint",
+];
 
 #[derive(Debug, Clone)]
 pub struct Discovery {
@@ -98,6 +110,23 @@ impl Provider {
 }
 
 impl Provider {
+    /// Whether `doc` describes this provider: it names this issuer (RFC 8414 section 3.3, a trailing slash aside)
+    /// and every address it carries is one the server itself would use.
+    fn is_ours(&self, doc: &Value) -> bool {
+        let issuer_matches = doc
+            .get("issuer")
+            .and_then(Value::as_str)
+            .is_some_and(|i| i.trim_end_matches('/') == self.issuer);
+        issuer_matches
+            && METADATA_URL_FIELDS
+                .iter()
+                .all(|field| match doc.get(*field) {
+                    None => true,
+                    Some(Value::String(u)) => Url::parse(u).is_ok_and(|u| allowed_url(&u)),
+                    Some(_) => false,
+                })
+    }
+
     /// The provider's own authorization server metadata (RFC 8414, or its OpenID configuration), unchanged, for
     /// the MCP origin to hand to clients. Kept for five minutes; if the provider cannot be reached the last copy is
     /// served, because a stale document beats none. `None` if there has never been one.
@@ -127,13 +156,21 @@ impl Provider {
             let Ok(doc) = serde_json::from_str::<Value>(&body) else {
                 continue;
             };
-            let named = |k: &str| doc.get(k).is_some_and(Value::is_string);
-            if named("issuer") && named("authorization_endpoint") {
+            if doc
+                .get("authorization_endpoint")
+                .is_some_and(Value::is_string)
+                && self.is_ours(&doc)
+            {
                 *cache = Some((doc.clone(), Instant::now()));
                 return Some(doc);
             }
         }
-        cache.as_ref().map(|(doc, _)| doc.clone())
+        // No fresh copy could be had. An old one beats none, and is not replaced by another attempt for a while.
+        let (doc, at) = cache.as_mut()?;
+        *at = (Instant::now() + RETRY_AFTER_FAILURE)
+            .checked_sub(self.metadata_ttl)
+            .unwrap_or_else(Instant::now);
+        Some(doc.clone())
     }
 }
 
