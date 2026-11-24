@@ -14,16 +14,20 @@ path = "src/main.rs"
 [dependencies]
 dibibest-store = { path = "../dibibest-store" }
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "fs", "sync"] }
 tower-http = { version = "0.6", features = ["limit"] }
 mime_guess = "2"
 percent-encoding = "2"
+serde = { workspace = true }
 serde_json = { workspace = true }
+ring = "0.17"
+base64 = "0.22"
+url = "2"
 thiserror = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["io-util"] }
+tokio = { version = "1", features = ["io-util", "test-util"] }
 tower = { version = "0.5", features = ["util"] }
 tempfile = "3"
