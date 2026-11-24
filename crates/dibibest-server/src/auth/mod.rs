@@ -23,7 +23,9 @@ pub mod session;
 /// What the sign-in routes and the MCP endpoint share: the settings, the HTTP client, the provider's discovery
 /// and its keys. Built once, from the configuration.
 pub struct Auth {
-    /// `None` when sign-in is not configured.
+    /// The identity provider (`DIBIBEST_OIDC_ISSUER`), also when only the MCP endpoint uses it.
+    pub issuer: Option<String>,
+    /// `None` when sign-in for people is not configured.
     pub oidc: Option<Oidc>,
     /// The origin people reach the server on (`DIBIBEST_PUBLIC_URL`).
     pub public_origin: Option<String>,
@@ -36,12 +38,12 @@ impl Auth {
     pub fn new(config: &Config) -> Self {
         let client = http::client(Duration::from_secs(10));
         Self {
+            issuer: config.issuer().map(str::to_string),
             oidc: config.oidc.clone(),
             public_origin: config.public_url.clone(),
             provider: config
-                .oidc
-                .as_ref()
-                .map(|o| provider::Provider::new(&o.issuer, client.clone())),
+                .issuer()
+                .map(|issuer| provider::Provider::new(issuer, client.clone())),
             verifier: jwt::Verifier::new(http::ReqwestJwks::new(client.clone())),
             client,
         }

@@ -44,6 +44,8 @@ impl Answer {
 pub struct IdpState {
     pub calls: Mutex<Vec<Call>>,
     pub discovery: Mutex<Answer>,
+    /// `/.well-known/oauth-authorization-server` (RFC 8414): 404 until a test gives one.
+    pub as_metadata: Mutex<Answer>,
     pub jwks: Mutex<Answer>,
     pub token: Mutex<Answer>,
     pub userinfo: Mutex<Answer>,
@@ -68,6 +70,10 @@ impl Idp {
                 "userinfo_endpoint": format!("{base}/oauth2/userinfo"),
                 "jwks_uri": format!("{base}/jwks"),
             }))),
+            as_metadata: Mutex::new(Answer {
+                status: 404,
+                ..Answer::ok(json!({}))
+            }),
             jwks: Mutex::new(Answer::ok(json!({ "keys": [] }))),
             token: Mutex::new(Answer::ok(
                 json!({ "access_token": "at-1", "token_type": "Bearer" }),
@@ -101,6 +107,7 @@ impl Idp {
     pub fn set(&self, which: &str, answer: Answer) {
         let slot = match which {
             "discovery" => &self.state.discovery,
+            "as_metadata" => &self.state.as_metadata,
             "jwks" => &self.state.jwks,
             "token" => &self.state.token,
             "userinfo" => &self.state.userinfo,
@@ -126,6 +133,7 @@ async fn handle(State(s): State<Arc<IdpState>>, req: Request<Body>) -> Response<
     });
     let answer = match path.as_str() {
         "/api/auth/.well-known/openid-configuration" => s.discovery.lock().unwrap().clone(),
+        "/api/auth/.well-known/oauth-authorization-server" => s.as_metadata.lock().unwrap().clone(),
         "/api/auth/jwks" => s.jwks.lock().unwrap().clone(),
         "/api/auth/oauth2/token" => s.token.lock().unwrap().clone(),
         "/api/auth/oauth2/userinfo" => s.userinfo.lock().unwrap().clone(),

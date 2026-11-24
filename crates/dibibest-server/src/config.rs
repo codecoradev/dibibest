@@ -83,8 +83,20 @@ pub struct Config {
     /// The redirect address registered with the provider, the `Secure` flag of cookies and the same-origin check
     /// all come from it, never from the `Host` header, which a client can write. Needed when sign-in is on.
     pub public_url: Option<String>,
+    /// `DIBIBEST_OIDC_ISSUER` on its own: the identity provider the MCP endpoint trusts, without sign-in for
+    /// people. Without trailing slash. [`Config::issuer`] also answers it when sign-in is on.
+    pub issuer: Option<String>,
     /// Sign-in, or `None` when it is not configured.
     pub oidc: Option<Oidc>,
+}
+
+impl Config {
+    /// The identity provider, from the issuer setting or from sign-in.
+    pub fn issuer(&self) -> Option<&str> {
+        self.issuer
+            .as_deref()
+            .or(self.oidc.as_ref().map(|o| o.issuer.as_str()))
+    }
 }
 
 impl Default for Config {
@@ -98,6 +110,7 @@ impl Default for Config {
             max_body_bytes: 1024 * 1024,
             shutdown_grace: Duration::from_secs(20),
             public_url: None,
+            issuer: None,
             oidc: None,
         }
     }
@@ -168,11 +181,11 @@ impl Config {
         let public_url = real("DIBIBEST_PUBLIC_URL")
             .map(|v| parse_public_url(&v))
             .transpose()?;
-        let oidc = parse_oidc(&real)?;
-        if oidc.is_some() && public_url.is_none() {
+        let (issuer, oidc) = parse_oidc(&real)?;
+        if (issuer.is_some() || oidc.is_some()) && public_url.is_none() {
             return Err(ConfigError {
                 var: "DIBIBEST_PUBLIC_URL",
-                reason: "needed when sign-in is configured: the redirect address and the cookies depend on it".into(),
+                reason: "needed when an identity provider is configured: the redirect address, the cookies and the MCP resource URL depend on it".into(),
             });
         }
         let to_u32 = |var: &'static str, n: u64| {
@@ -203,6 +216,7 @@ impl Config {
             shutdown_grace: number("DIBIBEST_SHUTDOWN_GRACE_SECS")?
                 .map_or(d.shutdown_grace, Duration::from_secs),
             public_url,
+            issuer,
             oidc,
         })
     }
@@ -235,40 +249,51 @@ fn parse_public_url(v: &str) -> Result<String, ConfigError> {
     Ok(url.origin().ascii_serialization())
 }
 
-/// Sign-in, from its four required settings and one optional one: all four, or none. A half is a mistake worth
-/// stopping for, not a reason to quietly leave sign-in off.
-fn parse_oidc(real: &dyn Fn(&'static str) -> Option<String>) -> Result<Option<Oidc>, ConfigError> {
+/// The identity provider and sign-in. The issuer alone is valid: it is all the MCP endpoint needs. The three
+/// settings that make sign-in for people (client id, client secret, session secret) come together with it or not at
+/// all: a half is a mistake worth stopping for, not a reason to quietly leave sign-in off.
+fn parse_oidc(
+    real: &dyn Fn(&'static str) -> Option<String>,
+) -> Result<(Option<String>, Option<Oidc>), ConfigError> {
     const ISSUER: &str = "DIBIBEST_OIDC_ISSUER";
     const SESSION: &str = "DIBIBEST_SESSION_SECRET";
-    let required = [
-        ISSUER,
+    let issuer = real(ISSUER)
+        .map(|raw| {
+            let bad = |reason: &str| ConfigError { var: ISSUER, reason: reason.into() };
+            let url = Url::parse(&raw).map_err(|e| bad(&format!("not an address: {e}")))?;
+            if !allowed_url(&url) || url.query().is_some() || url.fragment().is_some() {
+                return Err(bad("must be an https address (http is allowed only for localhost) with no credentials, query or fragment"));
+            }
+            Ok(raw.trim_end_matches('/').to_string())
+        })
+        .transpose()?;
+    let signin = [
         "DIBIBEST_OIDC_CLIENT_ID",
         "DIBIBEST_OIDC_CLIENT_SECRET",
         SESSION,
     ];
-    let values: Vec<Option<String>> = required.iter().map(|v| real(v)).collect();
+    let values: Vec<Option<String>> = signin.iter().map(|v| real(v)).collect();
     if values.iter().all(Option::is_none) {
-        return Ok(None);
+        return Ok((issuer, None));
     }
-    for (var, v) in required.iter().zip(&values) {
+    // some sign-in setting is present, so all of them and the issuer are needed
+    if issuer.is_none() {
+        return Err(ConfigError {
+            var: ISSUER,
+            reason: "sign-in is configured only in part: the issuer is missing".into(),
+        });
+    }
+    for (var, v) in signin.iter().zip(&values) {
         if v.is_none() {
             return Err(ConfigError {
                 var,
-                reason: "sign-in is configured only in part: set the issuer, the client id, the client secret and the session secret, or none of them".into(),
+                reason: "sign-in is configured only in part: set the client id, the client secret and the session secret together (the issuer alone is enough for the MCP endpoint)".into(),
             });
         }
     }
-    let [issuer, client_id, client_secret, session_secret] =
-        <[String; 4]>::try_from(values.into_iter().flatten().collect::<Vec<_>>())
-            .expect("four values were checked");
-    let bad_issuer = |reason: &str| ConfigError {
-        var: ISSUER,
-        reason: reason.into(),
-    };
-    let url = Url::parse(&issuer).map_err(|e| bad_issuer(&format!("not an address: {e}")))?;
-    if !allowed_url(&url) || url.query().is_some() || url.fragment().is_some() {
-        return Err(bad_issuer("must be an https address (http is allowed only for localhost) with no credentials, query or fragment"));
-    }
+    let [client_id, client_secret, session_secret] =
+        <[String; 3]>::try_from(values.into_iter().flatten().collect::<Vec<_>>())
+            .expect("three values were checked");
     if session_secret.len() < 32 {
         return Err(ConfigError {
             var: SESSION,
@@ -285,11 +310,15 @@ fn parse_oidc(real: &dyn Fn(&'static str) -> Option<String>) -> Result<Option<Oi
             });
         }
     };
-    Ok(Some(Oidc {
-        issuer: issuer.trim_end_matches('/').to_string(),
-        client_id,
-        client_secret,
-        session_secret,
-        token_auth,
-    }))
+    let issuer = issuer.expect("checked above");
+    Ok((
+        Some(issuer.clone()),
+        Some(Oidc {
+            issuer,
+            client_id,
+            client_secret,
+            session_secret,
+            token_auth,
+        }),
+    ))
 }
