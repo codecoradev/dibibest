@@ -1,0 +1,17 @@
+{
+  "title": "ping does not exist in the modern revision: 404 and -32601",
+  "steps": [
+    {
+      "request": {
+        "headers": {"mcp-protocol-version": "2026-07-28", "mcp-method": "ping"},
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "ping",
+          "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}
+        }
+      },
+      "expect": {"status": 404, "body": [{"path": ["error", "code"], "equals": -32601}]}
+    }
+  ]
+}

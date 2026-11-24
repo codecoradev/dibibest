@@ -1,0 +1,16 @@
+{
+  "title": "a body over 512 KiB: 413",
+  "steps": [
+    {
+      "request": {
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "tools/call",
+          "params": {"name": "convert_schema", "arguments": {"source": {"$repeat": "x", "times": 524288}, "to": "sql"}}
+        }
+      },
+      "expect": {"status": 413}
+    }
+  ]
+}

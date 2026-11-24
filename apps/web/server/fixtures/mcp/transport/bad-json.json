@@ -1,0 +1,4 @@
+{
+  "title": "a body that is not JSON: 400",
+  "steps": [{"request": {"body": {"$raw": "{nope"}}, "expect": {"status": 400}}]
+}

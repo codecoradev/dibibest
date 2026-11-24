@@ -1,0 +1,5 @@
+{
+  "title": "404 when no identity provider is configured",
+  "config": {"oidc": false},
+  "steps": [{"token": null, "request": {"body": {}}, "expect": {"status": 404}}]
+}

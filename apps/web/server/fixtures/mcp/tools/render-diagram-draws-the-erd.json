@@ -1,0 +1,34 @@
+{
+  "title": "render_diagram answers an SVG with the tables and the relation",
+  "steps": [
+    {
+      "request": {
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "tools/call",
+          "params": {
+            "name": "render_diagram",
+            "arguments": {
+              "source": "Table users {\n  id integer [pk]\n}\nTable posts {\n  user_id integer\n}\nRef: posts.user_id > users.id\n",
+              "theme": "light"
+            }
+          }
+        }
+      },
+      "expect": {
+        "status": 200,
+        "body": [
+          {"path": ["result", "isError"], "equals": false},
+          {
+            "path": ["result", "content", 0, "text"],
+            "startsWith": "<svg xmlns=\"http://www.w3.org/2000/svg\""
+          },
+          {"path": ["result", "content", 0, "text"], "contains": ">users<"},
+          {"path": ["result", "content", 0, "text"], "contains": "marker-end"},
+          {"path": ["result", "structuredContent", "width"], "gt": 0}
+        ]
+      }
+    }
+  ]
+}

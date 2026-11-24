@@ -1,0 +1,9 @@
+{
+  "title": "an unknown method is a JSON-RPC error inside a 200",
+  "steps": [
+    {
+      "request": {"body": {"jsonrpc": "2.0", "id": 1, "method": "resources/list", "params": {}}},
+      "expect": {"status": 200, "body": [{"path": ["error", "code"], "equals": -32601}]}
+    }
+  ]
+}

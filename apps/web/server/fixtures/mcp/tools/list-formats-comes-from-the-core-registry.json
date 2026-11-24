@@ -1,0 +1,22 @@
+{
+  "title": "list_formats lists what the core registry knows",
+  "steps": [
+    {
+      "request": {
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "tools/call",
+          "params": {"name": "list_formats", "arguments": {}}
+        }
+      },
+      "expect": {
+        "status": 200,
+        "body": [
+          {"path": ["result", "isError"], "equals": false},
+          {"path": ["result", "content", 0, "text"], "containsLine": "sql:sqlite"}
+        ]
+      }
+    }
+  ]
+}

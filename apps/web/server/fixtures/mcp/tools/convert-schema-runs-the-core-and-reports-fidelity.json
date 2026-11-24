@@ -1,0 +1,27 @@
+{
+  "title": "convert_schema converts and appends the fidelity report",
+  "steps": [
+    {
+      "request": {
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "tools/call",
+          "params": {
+            "name": "convert_schema",
+            "arguments": {"source": "Table users {\n  id integer [pk]\n  email varchar [unique]\n}\n", "to": "sql"}
+          }
+        }
+      },
+      "expect": {
+        "status": 200,
+        "body": [
+          {"path": ["result", "isError"], "equals": false},
+          {"path": ["result", "content", 0, "text"], "contains": "CREATE TABLE users"},
+          {"path": ["result", "content", 0, "text"], "contains": "-- fidelity --\ntables 1/1  columns 2/2"},
+          {"path": ["result", "structuredContent", "fidelity", "idempotent"], "equals": true}
+        ]
+      }
+    }
+  ]
+}

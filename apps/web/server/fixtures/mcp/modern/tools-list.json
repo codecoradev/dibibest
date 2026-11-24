@@ -1,0 +1,30 @@
+{
+  "title": "tools/list: the tools, a ttl, a private cache scope, read-only hints",
+  "steps": [
+    {
+      "request": {
+        "headers": {"mcp-protocol-version": "2026-07-28", "mcp-method": "tools/list"},
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "tools/list",
+          "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}
+        }
+      },
+      "expect": {
+        "status": 200,
+        "body": [
+          {
+            "path": ["result", "tools"],
+            "map": "name",
+            "equals": ["convert_schema", "render_diagram", "list_formats"]
+          },
+          {"path": ["result", "ttlMs"], "gt": 0},
+          {"path": ["result", "cacheScope"], "equals": "private"},
+          {"path": ["result", "resultType"], "equals": "complete"},
+          {"path": ["result", "tools", 0, "annotations", "readOnlyHint"], "equals": true}
+        ]
+      }
+    }
+  ]
+}

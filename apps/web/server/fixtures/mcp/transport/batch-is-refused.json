@@ -1,0 +1,4 @@
+{
+  "title": "a JSON-RPC batch: 400",
+  "steps": [{"request": {"body": [{"jsonrpc": "2.0", "id": 1, "method": "ping"}]}, "expect": {"status": 400}}]
+}
