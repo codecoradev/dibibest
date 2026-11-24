@@ -14,15 +14,22 @@ pub mod mcp;
 pub mod static_files;
 
 use app::{router, AppState};
+use axum::extract::ConnectInfo;
+use axum::Router;
 use config::Config;
 use dibibest_store::{SqliteStore, StoreError};
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use lock::{DataLock, LockError};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinSet;
+use tower::Service;
 
 /// Waits for a signal. If the signal cannot be waited for at all (the handler failed to register, the stream
 /// closed) it logs that and never completes: a handler that could not be installed must not look like a request
@@ -108,38 +115,181 @@ impl Bound {
         } = self;
         // Everything that holds the store lives inside `serve_until`; when it returns they are all gone, and
         // `_lock` is released after that, at the end of this function.
-        serve_until(listener, state, grace, shutdown).await
+        let (header_timeout, max_connections) = (state.header_timeout, state.max_connections);
+        serve_until(
+            listener,
+            router(state),
+            header_timeout,
+            max_connections,
+            grace,
+            shutdown,
+        )
+        .await
     }
 }
 
-async fn serve_until(
+/// Serves `app` on `listener` until `shutdown` completes.
+///
+/// Each connection is an HTTP/1.1 connection of `hyper`, served by a task of its own. A connection that has not
+/// delivered the complete headers of its next request within `header_timeout` is closed, whether it sent half a
+/// request line, one byte at a time, or nothing: the timer runs for the whole head, not for a pause between
+/// bytes, and it also ends an idle keep-alive connection. Every request carries the peer address as
+/// `ConnectInfo<SocketAddr>`.
+///
+/// At most `max_connections` connections are served at once. At that number the loop stops calling `accept`, so
+/// further connections wait in the queue of the operating system, and the places are given back as connections
+/// close. A connection that holds its place for the full `header_timeout` while sending nothing is therefore the
+/// cost of a client that opens many: the cap bounds it, and the timeout ends each one.
+///
+/// When `shutdown` completes the listener is dropped and every connection is told to finish: a request in flight
+/// is answered, an idle connection that has completed a request is closed at once, and one that has sent nothing
+/// yet is treated as a request in flight (hyper cannot tell it from a slow one) and waited for. After `grace`,
+/// whatever is still open is dropped. The
+/// connection tasks are all gone, and with them their copies of `app`, when this returns.
+///
+/// Only HTTP/1.1 is spoken: the server sits behind a reverse proxy that terminates TLS and talks HTTP/1.1 to it,
+/// and `hyper-util`'s protocol-sniffing builder reads the first bytes of a connection with no timeout at all,
+/// which would leave the slowloris hole open for exactly the connections it was meant to close.
+pub async fn serve_until(
     listener: TcpListener,
-    state: AppState,
+    app: Router,
+    header_timeout: Duration,
+    max_connections: usize,
     grace: Duration,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
-    let app = router(state);
-    let (begun_tx, begun_rx) = oneshot::channel::<()>();
-    let serve = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
-        shutdown.await;
-        let _ = begun_tx.send(());
-    });
-    let mut serve = std::pin::pin!(std::future::IntoFuture::into_future(serve));
-    tokio::select! {
-        r = &mut serve => r.map_err(ServerError::from),
-        () = async {
-            if begun_rx.await.is_ok() {
-                tokio::time::sleep(grace).await;
-            } else {
-                std::future::pending::<()>().await;
+    let (drain_tx, drain_rx) = watch::channel(());
+    let mut connections = JoinSet::new();
+    let mut shutdown = std::pin::pin!(shutdown);
+    // 0 would never accept anything, and more than the semaphore can hold would panic: both are put in range
+    // here because this function is public (the configuration is checked already, so this only matters to a caller
+    // that skips it).
+    let room = Arc::new(Semaphore::new(
+        max_connections.clamp(1, Semaphore::MAX_PERMITS),
+    ));
+    loop {
+        // A place first, then the connection: at the cap nothing is accepted, and the next connection waits in the
+        // queue of the operating system (and is refused there once that is full) instead of being held here.
+        let place = tokio::select! {
+            () = &mut shutdown => break,
+            // Finished connections are collected as they go, so the set stays as small as the open ones.
+            Some(done) = connections.join_next(), if !connections.is_empty() => {
+                log_if_panicked(done);
+                continue;
             }
-        } => {
-            tracing::warn!("grace period over, closing connections that are still open");
-            Ok(())
+            place = room.clone().acquire_owned() => place.expect("the semaphore is never closed"),
+        };
+        tokio::select! {
+            () = &mut shutdown => break,
+            accepted = listener.accept() => match accepted {
+                Ok((stream, peer)) => {
+                    connections.spawn(serve_connection(
+                        stream,
+                        peer,
+                        app.clone(),
+                        header_timeout,
+                        drain_rx.clone(),
+                        place,
+                    ));
+                }
+                Err(e) => {
+                    // the pause is not a reason to stop later than asked
+                    tokio::select! {
+                        () = &mut shutdown => break,
+                        () = accept_failed(&e) => {}
+                    }
+                }
+            },
+            Some(done) = connections.join_next(), if !connections.is_empty() => log_if_panicked(done),
         }
+    }
+    drop(listener);
+    // Dropping the sender is the signal: every connection starts finishing.
+    drop(drain_tx);
+    tracing::info!(
+        open = connections.len(),
+        "no longer accepting; waiting for requests in flight"
+    );
+    let drained = tokio::time::timeout(grace, async {
+        while let Some(done) = connections.join_next().await {
+            log_if_panicked(done);
+        }
+    })
+    .await;
+    if drained.is_err() {
+        tracing::warn!(
+            open = connections.len(),
+            "grace period over, closing connections that are still open"
+        );
+        connections.abort_all();
+        while let Some(done) = connections.join_next().await {
+            log_if_panicked(done);
+        }
+    }
+    // `app` and the state in it go here, after the last connection task has gone.
+    drop(app);
+    Ok(())
+}
+
+fn log_if_panicked(done: Result<(), tokio::task::JoinError>) {
+    if let Err(e) = done {
+        if e.is_panic() {
+            tracing::error!("a connection task panicked: {e}");
+        }
+    }
+}
+
+/// A failed `accept`. A connection that was reset before it was taken is that client's affair and nothing
+/// else. Anything else (usually too many open files) would fail again at once, so the loop waits a moment
+/// instead of spinning.
+async fn accept_failed(e: &std::io::Error) {
+    use std::io::ErrorKind::{ConnectionAborted, ConnectionRefused, ConnectionReset};
+    if matches!(
+        e.kind(),
+        ConnectionRefused | ConnectionAborted | ConnectionReset
+    ) {
+        return;
+    }
+    tracing::error!("accept failed: {e}");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+}
+
+/// One connection, until it closes, fails, or is told to finish (`drain` is closed) and has.
+async fn serve_connection(
+    stream: tokio::net::TcpStream,
+    peer: SocketAddr,
+    app: Router,
+    header_timeout: Duration,
+    mut drain: watch::Receiver<()>,
+    _place: OwnedSemaphorePermit,
+) {
+    let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+        let mut app = app.clone();
+        async move {
+            let mut req = req.map(axum::body::Body::new);
+            req.extensions_mut().insert(ConnectInfo(peer));
+            app.call(req).await
+        }
+    });
+    let connection = http1::Builder::new()
+        .timer(TokioTimer::new())
+        .header_read_timeout(header_timeout)
+        .serve_connection(TokioIo::new(stream), service)
+        // Upgrades are how the live WebSocket will arrive.
+        .with_upgrades();
+    let mut connection = std::pin::pin!(connection);
+    let mut finishing = false;
+    let outcome = loop {
+        tokio::select! {
+            outcome = connection.as_mut() => break outcome,
+            // `changed` fails once the sender is gone, which is the signal here.
+            _ = drain.changed(), if !finishing => {
+                finishing = true;
+                connection.as_mut().graceful_shutdown();
+            }
+        }
+    };
+    if let Err(e) = outcome {
+        tracing::debug!(%peer, "connection ended: {e}");
     }
 }

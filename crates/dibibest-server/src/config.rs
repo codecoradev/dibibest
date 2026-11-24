@@ -79,6 +79,13 @@ pub struct Config {
     pub max_body_bytes: usize,
     /// `DIBIBEST_SHUTDOWN_GRACE_SECS`: how long a shutdown waits for requests in flight.
     pub shutdown_grace: Duration,
+    /// `DIBIBEST_HEADER_TIMEOUT_SECS`: how long a connection has to deliver the headers of a request.
+    pub header_timeout: Duration,
+    /// `DIBIBEST_REQUEST_TIMEOUT_SECS`: how long a request may take, body and handler together.
+    pub request_timeout: Duration,
+    /// `DIBIBEST_MAX_CONNECTIONS`: how many connections are served at once. Past it the server stops accepting,
+    /// and further connections wait in the queue of the operating system until one closes.
+    pub max_connections: usize,
     /// `DIBIBEST_PUBLIC_URL`: the origin people use to reach the server, such as `https://dibibest.codecora.dev`.
     /// The redirect address registered with the provider, the `Secure` flag of cookies and the same-origin check
     /// all come from it, never from the `Host` header, which a client can write. Needed when sign-in is on.
@@ -109,6 +116,12 @@ impl Default for Config {
             rate_per_minute: 600,
             max_body_bytes: 1024 * 1024,
             shutdown_grace: Duration::from_secs(20),
+            // Longer than the 90 s a reverse proxy such as Traefik keeps an idle connection for: the limit also ends
+            // an idle kept-alive connection, and one closed under a proxy that still means to reuse it fails the next
+            // request sent on it.
+            header_timeout: Duration::from_secs(120),
+            request_timeout: Duration::from_secs(30),
+            max_connections: 1024,
             public_url: None,
             issuer: None,
             oidc: None,
@@ -200,6 +213,18 @@ impl Config {
                 reason: "too large".into(),
             })
         };
+        // A limit in seconds: 1 to a day. 0 would switch the limit off or close every connection at once, and a
+        // huge number is a limit nobody will meet; neither is a thing to guess the meaning of.
+        let seconds = |var: &'static str, default: Duration| -> Result<Duration, ConfigError> {
+            match number(var)? {
+                None => Ok(default),
+                Some(n @ 1..=86_400) => Ok(Duration::from_secs(n)),
+                Some(_) => Err(ConfigError {
+                    var,
+                    reason: "must be between 1 and 86400 seconds".into(),
+                }),
+            }
+        };
         Ok(Self {
             addr: parsed("DIBIBEST_ADDR")?.unwrap_or(d.addr),
             data_dir: value("DIBIBEST_DATA_DIR").map_or(d.data_dir, PathBuf::from),
@@ -215,6 +240,18 @@ impl Config {
             },
             shutdown_grace: number("DIBIBEST_SHUTDOWN_GRACE_SECS")?
                 .map_or(d.shutdown_grace, Duration::from_secs),
+            header_timeout: seconds("DIBIBEST_HEADER_TIMEOUT_SECS", d.header_timeout)?,
+            request_timeout: seconds("DIBIBEST_REQUEST_TIMEOUT_SECS", d.request_timeout)?,
+            max_connections: match number("DIBIBEST_MAX_CONNECTIONS")? {
+                None => d.max_connections,
+                Some(n @ 1..=1_000_000) => to_usize("DIBIBEST_MAX_CONNECTIONS", n)?,
+                Some(_) => {
+                    return Err(ConfigError {
+                        var: "DIBIBEST_MAX_CONNECTIONS",
+                        reason: "must be between 1 and 1000000".into(),
+                    })
+                }
+            },
             public_url,
             issuer,
             oidc,
