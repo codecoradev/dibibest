@@ -1,0 +1,78 @@
+# EXAMPLE compose file for one VPS where a reverse proxy (Traefik) already runs. Copy it, adjust it, keep the copy
+# next to a `.env` that is NOT committed. Full guide: docs/deploy.md.
+#
+#   docker compose up -d --build    # build here and start (or set `image:` and use `pull`)
+#   docker compose logs -f dibibest
+#
+# DEPLOYS MUST STOP THE OLD CONTAINER BEFORE STARTING THE NEW ONE. Recreate, never a rolling update, and never run
+# two replicas: two server processes on one data directory must not overlap. The second one is refused by the lock
+# file and exits, and the order of operations would be wrong if it were not. `docker compose up -d` after a new
+# image recreates the container (stop, then start), which is what is wanted. Do not use `--scale`, and do not use
+# an orchestrator mode that starts the new task first (Swarm `start-first`, Kubernetes `RollingUpdate`).
+
+services:
+  dibibest:
+    build: .
+    # image: ghcr.io/<owner>/dibibest:<tag>   # once an image is published; pin a tag, not `latest`
+    container_name: dibibest
+    restart: unless-stopped
+
+    # The shutdown waits up to DIBIBEST_SHUTDOWN_GRACE_SECS (20 by default) for requests in flight, then flushes the
+    # store. Docker must wait longer than that before it kills the process.
+    stop_grace_period: 30s
+    stop_signal: SIGTERM
+
+    # Secrets and per-site values live in `.env` (not committed): DIBIBEST_PUBLIC_URL, DIBIBEST_OIDC_ISSUER,
+    # DIBIBEST_OIDC_CLIENT_ID, DIBIBEST_OIDC_CLIENT_SECRET, DIBIBEST_SESSION_SECRET. A blank value counts as unset.
+    env_file:
+      - path: .env
+        required: false # without it the server runs with no sign-in and no MCP
+
+    # Not secret, safe to keep in this file. The image already sets ADDR, DATA_DIR and WEB_DIR.
+    environment:
+      DIBIBEST_TRUSTED_PROXIES: "2" # Cloudflare in front of Traefik. Use 1 for Traefik alone, 0 for no proxy.
+      DIBIBEST_SHUTDOWN_GRACE_SECS: "20"
+      # DIBIBEST_RATE_PER_MINUTE: "600"
+      # DIBIBEST_MAX_BODY_BYTES: "1048576"
+      # RUST_LOG: info
+
+    # A NAMED volume, never a bind mount: SQLite in WAL mode lost data on a Docker Desktop (macOS) bind mount in
+    # another project of ours. The database and the lock file live here.
+    volumes:
+      - dibibest-data:/data
+
+    # Liveness; the image has the same check. It is repeated here so that this file shows what Docker looks at.
+    healthcheck:
+      test: ["CMD-SHELL", 'wget -q -O /dev/null "http://127.0.0.1:$${DIBIBEST_ADDR##*:}/healthz" || exit 1']
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+    # No published port: only the reverse proxy reaches the container, over a shared Docker network. To test
+    # without a proxy, use `ports: ["127.0.0.1:8080:8080"]` (loopback only).
+    networks:
+      - proxy
+
+    # Traefik, with placeholder names. Replace the router and certificate resolver names with the ones of the
+    # existing Traefik, and the host with the real one (https://dibibest.codecora.dev in production).
+    # labels:
+    #   traefik.enable: "true"
+    #   traefik.docker.network: "<traefik-network>"
+    #   traefik.http.routers.dibibest.rule: "Host(`<host.example.com>`)"
+    #   traefik.http.routers.dibibest.entrypoints: "websecure"
+    #   traefik.http.routers.dibibest.tls.certresolver: "<resolver>"
+    #   traefik.http.services.dibibest.loadbalancer.server.port: "8080"
+
+networks:
+  proxy:
+    # The network Traefik is attached to; it must already exist. Its name comes from TRAEFIK_NETWORK in `.env`
+    # (default `traefik`). Compose reads `.env` for this line, so it needs no `environment:` entry.
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik}
+
+volumes:
+  dibibest-data:
+    # An explicit name, so that it is not prefixed with the project name and `docker run -v dibibest-data:/data`
+    # (backups, restores) mounts the very volume the service uses.
+    name: dibibest-data
