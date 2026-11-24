@@ -456,3 +456,208 @@ async fn an_unknown_theme_is_refused_for_a_schema_that_is_otherwise_fine() {
         "{pink}"
     );
 }
+
+// ---- one log line per call ----
+
+#[derive(Clone, Default)]
+struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogBuf {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Collects what the server logs while the returned guard lives (these tests run on one thread).
+fn capture_log() -> (LogBuf, tracing::subscriber::DefaultGuard) {
+    let buf = LogBuf::default();
+    let writer = buf.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .with_max_level(tracing::Level::INFO)
+        .finish();
+    (buf, tracing::subscriber::set_default(subscriber))
+}
+
+fn lines_about_mcp(buf: &LogBuf) -> Vec<String> {
+    String::from_utf8(buf.0.lock().unwrap().clone())
+        .unwrap()
+        .lines()
+        .filter(|l| l.contains("mcp:"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[tokio::test]
+async fn every_call_leaves_one_line_with_status_method_agent_version_and_reason() {
+    let w = world().await;
+    let (buf, _guard) = capture_log();
+    let good = format!("Bearer {}", w.token());
+    let ua = ("user-agent", "claude-test/1.0".to_string());
+    let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).to_string();
+
+    struct Case(
+        &'static str,
+        String,
+        Vec<(&'static str, String)>,
+        Vec<&'static str>,
+    );
+    // (name, body, headers, the words that must be in its one line)
+    let cases = vec![
+        Case(
+            "no token",
+            list.clone(),
+            vec![ua.clone()],
+            vec!["status=401", "no bearer token", "claude-test/1.0"],
+        ),
+        Case(
+            "bad token",
+            list.clone(),
+            vec![
+                ua.clone(),
+                ("authorization", "Bearer abc.def.ghi".to_string()),
+            ],
+            vec!["status=401", "token refused"],
+        ),
+        Case(
+            "tools/list",
+            list.clone(),
+            vec![
+                ua.clone(),
+                ("authorization", good.clone()),
+                ("mcp-protocol-version", "2025-06-18".to_string()),
+            ],
+            vec![
+                "status=200",
+                "method=\"tools/list\"",
+                "pv=\"2025-06-18\"",
+                "claude-test/1.0",
+                "reason=-",
+            ],
+        ),
+        Case(
+            "parse error",
+            "{not json".to_string(),
+            vec![ua.clone(), ("authorization", good.clone())],
+            vec!["status=400", "parse error"],
+        ),
+        Case(
+            "too large",
+            "x".repeat(512 * 1024 + 1),
+            vec![ua.clone(), ("authorization", good.clone())],
+            vec!["status=413", "request too large"],
+        ),
+        Case(
+            "far too large",
+            "x".repeat(512 * 1024 + 100),
+            vec![ua.clone(), ("authorization", good.clone())],
+            vec!["status=413", "request too large"],
+        ),
+        Case(
+            "too large by its declared length",
+            "{}".to_string(),
+            vec![
+                ua.clone(),
+                ("authorization", good.clone()),
+                ("content-length", (512 * 1024 + 1).to_string()),
+            ],
+            vec!["status=413", "request too large"],
+        ),
+        Case(
+            "not allowed",
+            String::new(),
+            vec![ua.clone()],
+            vec!["status=405", "method not allowed"],
+        ),
+    ];
+    for Case(name, body, headers, wanted) in cases {
+        let before = lines_about_mcp(&buf).len();
+        if name == "not allowed" {
+            let req = Request::builder()
+                .method("DELETE")
+                .uri("/mcp")
+                .header("user-agent", "claude-test/1.0")
+                .body(Body::empty())
+                .unwrap();
+            send(&w.router, req).await;
+        } else {
+            w.post(body, &headers).await;
+        }
+        let lines = lines_about_mcp(&buf);
+        assert_eq!(lines.len(), before + 1, "{name}: one line per call");
+        let line = lines.last().unwrap();
+        for word in wanted {
+            assert!(line.contains(word), "{name}: {word} missing in {line}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_log_never_holds_a_token_or_a_request_body_and_a_method_name_cannot_split_a_line() {
+    let w = world().await;
+    let (buf, _guard) = capture_log();
+    let token = w.token();
+    w.post(
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+               "params": {"name": "convert_schema", "arguments": {"input": "SECRET-SCHEMA-TEXT"}}})
+        .to_string(),
+        &[("authorization", format!("Bearer {token}"))],
+    )
+    .await;
+    // a newline cannot be put in a header, but it can in the method name of the JSON body
+    w.post(
+        json!({"jsonrpc": "2.0", "id": 2, "method": "x\nmcp: status=200 forged"}).to_string(),
+        &[("authorization", format!("Bearer {token}"))],
+    )
+    .await;
+    w.post(
+        "SECRET-BODY".into(),
+        &[(
+            "authorization",
+            "Bearer abc.def.SECRET-TOKEN-PART".to_string(),
+        )],
+    )
+    .await;
+    let log = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    for secret in [
+        token.as_str(),
+        "SECRET-SCHEMA-TEXT",
+        "SECRET-BODY",
+        "SECRET-TOKEN-PART",
+    ] {
+        assert!(!log.contains(secret), "{secret} reached the log");
+    }
+    assert_eq!(
+        log.lines().filter(|l| l.contains("forged")).count(),
+        1,
+        "the forged text stays inside its own line"
+    );
+    assert!(
+        !log.lines().any(|l| l.starts_with("mcp: status=200")),
+        "a method name must not start a line"
+    );
+}
+
+#[tokio::test]
+async fn a_modern_refusal_logs_its_reason() {
+    let w = world().await;
+    let (buf, _guard) = capture_log();
+    let (status, _) = w
+        .rpc(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list",
+                    "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "1999-01-01"}}}))
+        .await;
+    assert!(status >= 400, "expected a refusal, got {status}");
+    let lines = lines_about_mcp(&buf);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].contains(&format!("status={status}")),
+        "{}",
+        lines[0]
+    );
+    assert!(!lines[0].contains("reason=-"), "{}", lines[0]);
+}
