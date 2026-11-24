@@ -185,6 +185,8 @@ dependencies = [
  "base64 0.22.1",
  "dibibest-core",
  "dibibest-store",
+ "hyper",
+ "hyper-util",
  "mime_guess",
  "percent-encoding",
  "reqwest",

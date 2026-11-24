@@ -98,8 +98,26 @@ already mounts them, so a stage adds routes without editing the composition in `
   from the host works). A line that cannot be read as text, or a chosen entry that is not an address, makes the header
   malformed: such requests share one separate bucket, so they can neither use up the budget of direct requests nor rotate
   into fresh buckets. At 0, the default, the header is ignored altogether. Cloudflare in front of Traefik is N=2.
-- **Shutdown** (SIGTERM or Ctrl-C; a handler that cannot be installed is logged and never counts as a shutdown request): stop taking connections, wait up to `DIBIBEST_SHUTDOWN_GRACE_SECS` for requests in
-  flight, let the store flush its writer, release the lock, exit 0.
+- **Timeouts** (issue #104). The connections are served by `hyper`'s HTTP/1.1 connection (not `axum::serve`, which has
+  no header timeout), one task per connection, and the router gets the peer address as `ConnectInfo<SocketAddr>` as before.
+  - *Header-read timeout* (`DIBIBEST_HEADER_TIMEOUT_SECS`, default 120): a connection that has not delivered the complete
+    headers of its next request in that time is closed. The timer runs for the whole head, so half a request line, a header
+    sent a byte at a time, or nothing at all is closed alike. It also ends a kept-alive connection that stays silent after
+    a response; so the default is 120 s, longer than the 90 s that Traefik keeps an idle connection for: a shorter one would close connections the proxy still means to reuse, and the next request sent on one (a POST, which is not retried) would fail. The price is that a client that sends nothing holds a connection for up to 120 s; the number of open connections is not capped (see below).
+  - *Request timeout* (`DIBIBEST_REQUEST_TIMEOUT_SECS`, default 30): from the moment the headers are in to the moment the
+    response is ready, body and handler together. When it is over the handler is dropped, and the answer is
+    `408 Request Timeout` with `Connection: close`. 408, not 504: both a slow body and a slow handler are the server
+    giving up waiting for the request, while 504 says a gateway got nothing from an upstream and this server is the
+    origin. A streamed response (an event stream, a WebSocket after its 101) is not cut off, because only the time until
+    the response starts is bounded. The probes are under it like every route.
+  - Only HTTP/1.1 is spoken (the reverse proxy terminates TLS and speaks it to the server). `hyper-util`'s protocol-sniffing
+    builder reads the first bytes of a connection with no timeout, which would leave the hole open.
+  - Not covered: how slowly a client *reads* a response, and how many connections are open at once.
+- **Shutdown** (SIGTERM or Ctrl-C; a handler that cannot be installed is logged and never counts as a shutdown request):
+  stop taking connections and tell every open one to finish (a request in flight is answered, an idle connection is
+  closed at once), wait up to `DIBIBEST_SHUTDOWN_GRACE_SECS`, then drop whatever is still open (a slow request, a client
+  still sending headers). Only then does the store flush its writer and the lock go; exit 0.
 - **Configuration** is environment only: `DIBIBEST_ADDR` (default `127.0.0.1:8080`), `DIBIBEST_DATA_DIR`,
   `DIBIBEST_WEB_DIR`, `DIBIBEST_TRUSTED_PROXIES`, `DIBIBEST_RATE_PER_MINUTE`, `DIBIBEST_MAX_BODY_BYTES`,
-  `DIBIBEST_SHUTDOWN_GRACE_SECS`. A blank value counts as unset; a bad value stops the start and names the variable.
+  `DIBIBEST_SHUTDOWN_GRACE_SECS`, `DIBIBEST_HEADER_TIMEOUT_SECS`, `DIBIBEST_REQUEST_TIMEOUT_SECS` (the last two are
+  1 to 86400 seconds). A blank value counts as unset; a bad value stops the start and names the variable.

@@ -23,6 +23,8 @@ pub struct AppState {
     pub limiter: Arc<RateLimiter>,
     pub trusted_proxies: usize,
     pub max_body_bytes: usize,
+    pub header_timeout: std::time::Duration,
+    pub request_timeout: std::time::Duration,
     pub auth: Arc<crate::auth::Auth>,
 }
 
@@ -34,13 +36,22 @@ impl AppState {
             limiter: Arc::new(RateLimiter::new(config.rate_per_minute)),
             trusted_proxies: config.trusted_proxies,
             max_body_bytes: config.max_body_bytes,
+            header_timeout: config.header_timeout,
+            request_timeout: config.request_timeout,
             auth: Arc::new(crate::auth::Auth::new(config)),
         }
     }
 }
 
 pub fn router(state: AppState) -> Router {
+    router_with(state, Router::new())
+}
+
+/// The router with extra routes inside the same limits. It is how a test adds a route that misbehaves (a slow
+/// one) without the server having one; nothing in production passes anything but [`router`].
+pub fn router_with(state: AppState, extra: Router<AppState>) -> Router {
     Router::new()
+        .merge(extra)
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .merge(auth::routes())
@@ -49,7 +60,38 @@ pub fn router(state: AppState) -> Router {
         .fallback(get(static_files::serve))
         .layer(RequestBodyLimitLayer::new(state.max_body_bytes))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            request_timeout,
+        ))
         .with_state(state)
+}
+
+/// Gives a request `request_timeout` from the moment its headers are in to the moment its response is ready,
+/// and answers 408 if it is not.
+///
+/// The one timer covers the body as well as the handler. A handler that reads the body is waiting inside the
+/// timer while a slow client dribbles it in, and a handler that is simply slow is waiting too, so neither can
+/// hold the connection. The handler's future is dropped when the time is up, which also drops the body it was
+/// reading.
+///
+/// 408 and not 504: 408 is the server saying it gave up waiting for the request, which is what happened in both
+/// cases and is the client's to retry, while 504 says a gateway got no answer from an upstream, and this server
+/// is the origin. The answer carries `Connection: close`, because a body that was only half read cannot be told
+/// from the start of the next request, so the connection ends after it.
+///
+/// Only the time until the response starts is bounded. A response that is streamed (an event stream, a WebSocket
+/// after its 101) is not cut off by it.
+async fn request_timeout(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    match tokio::time::timeout(state.request_timeout, next.run(req)).await {
+        Ok(res) => res,
+        Err(_) => {
+            let mut res = static_files::json_error(StatusCode::REQUEST_TIMEOUT, "request_timeout");
+            res.headers_mut()
+                .insert(header::CONNECTION, HeaderValue::from_static("close"));
+            res
+        }
+    }
 }
 
 /// Liveness: the process answers.
