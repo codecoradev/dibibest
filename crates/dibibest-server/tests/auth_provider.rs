@@ -738,3 +738,25 @@ async fn every_endpoint_address_in_the_document_is_checked_and_links_are_not() {
         .await
         .is_some());
 }
+
+#[tokio::test]
+async fn a_null_address_is_the_same_as_none_but_a_wrong_kind_of_value_is_not() {
+    let idp = Idp::start().await;
+    idp.set(
+        "discovery",
+        Answer::ok(rfc8414_doc(&idp, json!({"registration_endpoint": null}))),
+    );
+    assert!(provider(&idp)
+        .authorization_server_metadata()
+        .await
+        .is_some());
+    let idp = Idp::start().await;
+    idp.set(
+        "discovery",
+        Answer::ok(rfc8414_doc(&idp, json!({"registration_endpoint": 7}))),
+    );
+    assert!(provider(&idp)
+        .authorization_server_metadata()
+        .await
+        .is_none());
+}

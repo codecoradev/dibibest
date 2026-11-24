@@ -119,8 +119,9 @@ impl Provider {
 
 impl Provider {
     /// Whether `doc` describes this provider: it names this issuer (RFC 8414 section 3.3, a trailing slash aside)
-    /// and every address it gives for an endpoint or key set is one the server itself would use. Documentation and
-    /// policy links (`service_documentation`, `op_policy_uri`, ...) are not endpoints and are left alone.
+    /// and every field named `*_endpoint`, `jwks_uri` and the `mtls_endpoint_aliases` entries is an address the
+    /// server itself would use (a `null` counts as absent). Other links (`service_documentation`, `op_policy_uri`,
+    /// `signed_jwks_uri`, `check_session_iframe`, ...) are passed through unchecked.
     fn is_ours(&self, doc: &Value) -> bool {
         let issuer_matches = doc
             .get("issuer")
@@ -206,10 +207,11 @@ impl Provider {
 }
 
 fn usable_address(value: &Value) -> bool {
-    value
-        .as_str()
-        .and_then(|u| Url::parse(u).ok())
-        .is_some_and(|u| allowed_url(&u))
+    value.is_null()
+        || value
+            .as_str()
+            .and_then(|u| Url::parse(u).ok())
+            .is_some_and(|u| allowed_url(&u))
 }
 
 fn parse(doc: &Value) -> Result<Discovery, ProviderError> {
