@@ -160,7 +160,46 @@ async fn mcp(State(state): State<AppState>, req: Request) -> Response {
         );
         return with_cors(origin, res);
     }
-    with_cors(origin, serve(&state.auth, &ctx, req).await)
+    let mut call = Call::default();
+    let res = serve(&state.auth, &ctx, req, &mut call).await;
+    call.log(res.status());
+    with_cors(origin, res)
+}
+
+/// What is known about one call to `/mcp`, for the single log line it leaves. Never the token or any of the body:
+/// only the method name, a few headers (quoted and cut, see `clip`) and why the call was refused, if it was.
+#[derive(Default)]
+struct Call {
+    method: Option<String>,
+    ua: Option<String>,
+    protocol_version: Option<String>,
+    reason: Option<String>,
+}
+
+impl Call {
+    fn log(&self, status: StatusCode) {
+        let shown = |v: &Option<String>| v.clone().unwrap_or_else(|| "-".to_string());
+        let line = format!(
+            "mcp: status={} method={} ua={} pv={} reason={}",
+            status.as_u16(),
+            shown(&self.method),
+            shown(&self.ua),
+            shown(&self.protocol_version),
+            shown(&self.reason)
+        );
+        // a refusal stands out from the normal traffic
+        if status.as_u16() >= 400 {
+            tracing::warn!("{line}");
+        } else {
+            tracing::info!("{line}");
+        }
+    }
+
+    /// Records why a call was refused and passes the response on.
+    fn refused(&mut self, why: &str, res: Response) -> Response {
+        self.reason = Some(clip(why, 120));
+        res
+    }
 }
 
 fn unauthorized(ctx: &Ctx<'_>, invalid_token: bool) -> Response {
@@ -204,20 +243,21 @@ fn header_text<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
 }
 
 /// POST /mcp (405 for the other methods: no server-initiated stream, no sessions).
-async fn serve(auth: &Auth, ctx: &Ctx<'_>, req: Request) -> Response {
+async fn serve(auth: &Auth, ctx: &Ctx<'_>, req: Request, call: &mut Call) -> Response {
+    call.ua = Some(clip(header_text(req.headers(), "user-agent"), 40));
+    call.protocol_version = Some(clip(header_text(req.headers(), "mcp-protocol-version"), 40));
     if req.method() != Method::POST {
-        return json_response(
+        let res = json_response(
             405,
             json!({ "error": "method not allowed" }),
             &[("allow", "POST, OPTIONS")],
         );
+        return call.refused("method not allowed", res);
     }
     let headers = req.headers().clone();
-    let ua = clip(header_text(&headers, "user-agent"), 40);
 
     let Some(token) = bearer(&headers) else {
-        tracing::info!("mcp: 401 no bearer ua={ua}");
-        return unauthorized(ctx, false);
+        return call.refused("no bearer token", unauthorized(ctx, false));
     };
     let unavailable = || {
         json_response(
@@ -227,7 +267,7 @@ async fn serve(auth: &Auth, ctx: &Ctx<'_>, req: Request) -> Response {
         )
     };
     let Some(jwks_uri) = ctx.provider.discovery().await.ok().and_then(|d| d.jwks_uri) else {
-        return unavailable();
+        return call.refused("the identity provider cannot be reached", unavailable());
     };
     let resource = ctx.resource();
     let opts = VerifyOptions {
@@ -239,11 +279,12 @@ async fn serve(auth: &Auth, ctx: &Ctx<'_>, req: Request) -> Response {
     match auth.verifier.verify(token, &opts).await {
         Ok(_) => {}
         Err(TokenError::Invalid(why)) => {
-            // visible in the server log; never the token
-            tracing::warn!("mcp: token refused: {}", clip(&why, 120));
-            return unauthorized(ctx, true);
+            // the reason is logged, never the token
+            return call.refused(&format!("token refused: {why}"), unauthorized(ctx, true));
         }
-        Err(TokenError::Unavailable(_)) => return unavailable(),
+        Err(TokenError::Unavailable(_)) => {
+            return call.refused("the signing keys cannot be fetched", unavailable());
+        }
     }
 
     let too_large = || {
@@ -258,44 +299,47 @@ async fn serve(auth: &Auth, ctx: &Ctx<'_>, req: Request) -> Response {
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<usize>().ok());
     if declared.is_some_and(|n| n > MAX_BODY_BYTES) {
-        return too_large();
+        return call.refused("request too large", too_large());
     }
     let Ok(bytes) = to_bytes(req.into_body(), MAX_BODY_BYTES + 1).await else {
-        return too_large();
+        return call.refused("request too large", too_large());
     };
     if bytes.len() > MAX_BODY_BYTES {
-        return too_large();
+        return call.refused("request too large", too_large());
     }
 
-    let bad =
-        |code: i64, message: &str| json_response(400, rpc::error(&Value::Null, code, message), &[]);
+    let bad = |call: &mut Call, code: i64, message: &str| {
+        let res = json_response(400, rpc::error(&Value::Null, code, message), &[]);
+        call.refused(message, res)
+    };
     let Ok(message) = serde_json::from_slice::<Value>(&bytes) else {
-        return bad(-32700, "parse error");
+        return bad(call, -32700, "parse error");
     };
     if message.is_array() {
-        return bad(-32600, "batching is not supported");
+        return bad(call, -32600, "batching is not supported");
     }
     if !message.is_object() || message.get("jsonrpc") != Some(&json!("2.0")) {
-        return bad(-32600, "invalid request");
+        return bad(call, -32600, "invalid request");
     }
+    call.method = message
+        .get("method")
+        .and_then(Value::as_str)
+        .map(|m| clip(m, 60));
     // a notification (no id) or a client response (no method) gets no body
     let (Some(method), Some(id)) = (message.get("method"), message.get("id")) else {
         return StatusCode::ACCEPTED.into_response();
     };
     let Some(method) = method.as_str() else {
-        return json_response(400, rpc::error(id, -32600, "invalid request"), &[]);
+        let res = json_response(400, rpc::error(id, -32600, "invalid request"), &[]);
+        return call.refused("invalid request", res);
     };
-    tracing::info!(
-        "mcp: <- {} ua={ua} pv={} mm={} accept={}",
-        clip(method, 60),
-        clip(header_text(&headers, "mcp-protocol-version"), 40),
-        clip(header_text(&headers, "mcp-method"), 60),
-        clip(header_text(&headers, "accept"), 60)
-    );
 
     if rpc::is_modern(&message, method) {
         let (status, body) = rpc::modern(&headers, &message, method).await;
-        tracing::info!("mcp: {} (modern) -> {status}", clip(method, 60));
+        if status >= 400 {
+            let why = body["error"]["message"].as_str().unwrap_or("refused");
+            call.reason = Some(clip(why, 120));
+        }
         return json_response(status, body, &[]);
     }
     let reply = rpc::legacy(&message, method).await;
