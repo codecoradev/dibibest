@@ -44,3 +44,30 @@ inside, two-function API outside).
   to preserve-as-comment so round-trips stay lossless on unknowns.
 - SQL emit is PG-flavored; dialect selection arrives with R2.
 - ObjectName quoting is minimal; identifier edge cases belong to the R1 corpus.
+
+## Storage (`dibibest-store`, epic #84)
+
+Projects live on the server (decision of 2026-11-24: own VPS, one origin, SQLite). The crate is the seam:
+
+- `Store`: projects, an append-only **op log** with one total order per project (`seq` from 1), and **snapshots**.
+  The store never interprets an op; the payload is opaque JSON text and every row carries a `schema_version`.
+- An op carries an **idempotency key**, unique per project. A retry is answered with the same `seq` and writes
+  nothing; a key reused by another actor or for other content is refused.
+- Adapters: `MemoryStore` (reference and test double) and `SqliteStore`. Both run the same contract cases
+  (`store_contract!`), so a Postgres adapter can be added without touching the room or the server.
+
+`SqliteStore` rules, each covered by a test:
+
+1. **One writer thread, a bounded queue.** SQLite has one writer; callers that race for the lock get `SQLITE_BUSY`.
+   A full queue answers `Busy` at once and writes nothing.
+2. **Group commit.** Waiting jobs share one transaction (a savepoint per job). A caller is answered after `COMMIT`,
+   so an acknowledged op is durable, and nothing may be broadcast before that.
+3. **WAL, checked.** `journal_mode=WAL` is requested and the answer is verified; the open fails otherwise.
+4. **`synchronous=FULL`.** `NORMAL` can lose a commit that clients already saw, and its `seq` would be reused.
+5. **Readers** are read-only connections; replay is read page by page so no read holds back the WAL checkpoint.
+6. **Disk full** turns the store read-only (`read_only()`, to be shown on `/readyz`); it clears when a write succeeds.
+7. **Backup** is `backup_to` (`VACUUM INTO`), never a copy of the `.db` file: what is still in `-wal` would be missed.
+
+Operating rules: exactly one server process per database (the room state is in memory; the lock file comes with the
+server crate, #91); keep the data directory on a local disk or a Docker **named volume**, not a Docker Desktop bind
+mount (WAL on VirtioFS lost data in another project of ours).
