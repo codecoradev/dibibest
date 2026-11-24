@@ -57,6 +57,14 @@ pub fn random_token(bytes: usize) -> String {
     b64url(&buf)
 }
 
+/// Whether two byte strings are equal, without the time taken depending on where they first differ. Both are
+/// MACed under a fixed key and the MACs are compared by `ring`'s constant-time check, which also makes the work
+/// the same for texts of different lengths.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    let key = hmac::Key::new(hmac::HMAC_SHA256, b"dibibest constant-time comparison");
+    hmac::verify(&key, a, hmac::sign(&key, b).as_ref()).is_ok()
+}
+
 /// The PKCE S256 challenge of `verifier` (RFC 7636).
 pub fn pkce_challenge(verifier: &str) -> String {
     b64url(digest::digest(&digest::SHA256, verifier.as_bytes()).as_ref())

@@ -6,7 +6,7 @@
 //! - [`jwt`]: verification of access tokens against the identity provider's JWKS, shared with the MCP endpoint.
 //! - [`http`] and [`provider`]: the client for the identity provider and its discovery document.
 //!
-//! The routes are mounted by `app.rs` from [`routes`]; they arrive with the next change.
+//! - [`flow`]: the routes, `/auth/me`, `/auth/login`, `/auth/callback` and `/auth/logout`.
 
 use crate::app::AppState;
 use crate::config::{Config, Oidc};
@@ -14,6 +14,7 @@ use axum::Router;
 use std::time::Duration;
 
 pub mod codec;
+pub mod flow;
 pub mod http;
 pub mod jwt;
 pub mod provider;
@@ -48,5 +49,5 @@ impl Auth {
 }
 
 pub fn routes() -> Router<AppState> {
-    Router::new()
+    flow::routes()
 }
