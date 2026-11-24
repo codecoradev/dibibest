@@ -146,6 +146,9 @@ export function safeReturnTo(v: string | null): string {
 	try {
 		const u = new URL(v, base);
 		if (u.origin !== base) return fallback;
+		// Normalising can create what the input did not have: `..` is dropped at the root, so `/..//evil.test`
+		// becomes the path `//evil.test`, which a browser follows to another site. Check the result too.
+		if (u.pathname.startsWith('//')) return fallback;
 		return `${u.pathname}${u.search}${u.hash}`;
 	} catch {
 		return fallback;
