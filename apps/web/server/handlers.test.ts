@@ -94,6 +94,13 @@ test('return_to only accepts same-site paths', () => {
 	for (const v of ['/\t/evil.test', '/\n/evil.test', '/\r/evil.test', '/\\/evil.test', '/x\\..\\..//evil.test', '/\u0000/evil']) {
 		expect(safeReturnTo(v)).toBe('/app');
 	}
+	// dot segments that normalise into a protocol-relative path: `/..//evil.test` does not start with two slashes,
+	// but once `..` is dropped at the root the path IS `//evil.test`, which a browser follows off-site
+	for (const v of ['/..//evil.test', '/a/..//evil.test', '/.//evil.test', '/../..//evil.test', '/%2e%2e//evil.test', '/%2E%2E//evil.test', '/..//evil.test?x=1#y']) {
+		expect(safeReturnTo(v), v).toBe('/app');
+	}
+	// a double slash further in stays on this site
+	expect(safeReturnTo('/p//x')).toBe('/p//x');
 	// what /auth/login receives for ?return_to=/%09/evil.test
 	expect(safeReturnTo(new URLSearchParams('return_to=/%09/evil.test').get('return_to'))).toBe('/app');
 	// ordinary paths survive, normalized
