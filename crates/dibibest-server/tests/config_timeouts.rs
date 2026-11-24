@@ -81,3 +81,24 @@ fn a_value_beyond_a_day_is_an_error_not_a_limit_nobody_will_meet() {
         assert!(lookup(&[(var, "86400")]).is_ok(), "a day is the largest");
     }
 }
+
+#[test]
+fn the_cap_on_open_connections_has_a_default_and_a_range() {
+    assert_eq!(lookup(&[]).unwrap().max_connections, 1024);
+    let c = lookup(&[("DIBIBEST_MAX_CONNECTIONS", "50")]).unwrap();
+    assert_eq!(c.max_connections, 50);
+    assert_eq!(
+        lookup(&[("DIBIBEST_MAX_CONNECTIONS", "  ")])
+            .unwrap()
+            .max_connections,
+        1024,
+        "a blank value counts as unset"
+    );
+    for bad in ["0", "1000001", "many", "-1"] {
+        let err = lookup(&[("DIBIBEST_MAX_CONNECTIONS", bad)])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("DIBIBEST_MAX_CONNECTIONS"), "{bad}: {err}");
+    }
+    assert!(lookup(&[("DIBIBEST_MAX_CONNECTIONS", "1000000")]).is_ok());
+}

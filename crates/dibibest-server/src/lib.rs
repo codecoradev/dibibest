@@ -27,7 +27,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tower::Service;
 
@@ -115,8 +115,16 @@ impl Bound {
         } = self;
         // Everything that holds the store lives inside `serve_until`; when it returns they are all gone, and
         // `_lock` is released after that, at the end of this function.
-        let header_timeout = state.header_timeout;
-        serve_until(listener, router(state), header_timeout, grace, shutdown).await
+        let (header_timeout, max_connections) = (state.header_timeout, state.max_connections);
+        serve_until(
+            listener,
+            router(state),
+            header_timeout,
+            max_connections,
+            grace,
+            shutdown,
+        )
+        .await
     }
 }
 
@@ -127,6 +135,11 @@ impl Bound {
 /// request line, one byte at a time, or nothing: the timer runs for the whole head, not for a pause between
 /// bytes, and it also ends an idle keep-alive connection. Every request carries the peer address as
 /// `ConnectInfo<SocketAddr>`.
+///
+/// At most `max_connections` connections are served at once. At that number the loop stops calling `accept`, so
+/// further connections wait in the queue of the operating system, and the places are given back as connections
+/// close. A connection that holds its place for the full `header_timeout` while sending nothing is therefore the
+/// cost of a client that opens many: the cap bounds it, and the timeout ends each one.
 ///
 /// When `shutdown` completes the listener is dropped and every connection is told to finish: a request in flight
 /// is answered, an idle connection is closed at once. After `grace`, whatever is still open is dropped. The
@@ -139,13 +152,26 @@ pub async fn serve_until(
     listener: TcpListener,
     app: Router,
     header_timeout: Duration,
+    max_connections: usize,
     grace: Duration,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
     let (drain_tx, drain_rx) = watch::channel(());
     let mut connections = JoinSet::new();
     let mut shutdown = std::pin::pin!(shutdown);
+    let room = Arc::new(Semaphore::new(max_connections));
     loop {
+        // A place first, then the connection: at the cap nothing is accepted, and the next connection waits in the
+        // queue of the operating system (and is refused there once that is full) instead of being held here.
+        let place = tokio::select! {
+            () = &mut shutdown => break,
+            // Finished connections are collected as they go, so the set stays as small as the open ones.
+            Some(done) = connections.join_next(), if !connections.is_empty() => {
+                log_if_panicked(done);
+                continue;
+            }
+            place = room.clone().acquire_owned() => place.expect("the semaphore is never closed"),
+        };
         tokio::select! {
             () = &mut shutdown => break,
             accepted = listener.accept() => match accepted {
@@ -156,11 +182,17 @@ pub async fn serve_until(
                         app.clone(),
                         header_timeout,
                         drain_rx.clone(),
+                        place,
                     ));
                 }
-                Err(e) => accept_failed(&e).await,
+                Err(e) => {
+                    // the pause is not a reason to stop later than asked
+                    tokio::select! {
+                        () = &mut shutdown => break,
+                        () = accept_failed(&e) => {}
+                    }
+                }
             },
-            // Finished connections are collected as they go, so the set stays as small as the open ones.
             Some(done) = connections.join_next(), if !connections.is_empty() => log_if_panicked(done),
         }
     }
@@ -222,6 +254,7 @@ async fn serve_connection(
     app: Router,
     header_timeout: Duration,
     mut drain: watch::Receiver<()>,
+    _place: OwnedSemaphorePermit,
 ) {
     let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
         let mut app = app.clone();

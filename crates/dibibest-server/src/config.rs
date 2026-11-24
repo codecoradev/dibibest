@@ -83,6 +83,9 @@ pub struct Config {
     pub header_timeout: Duration,
     /// `DIBIBEST_REQUEST_TIMEOUT_SECS`: how long a request may take, body and handler together.
     pub request_timeout: Duration,
+    /// `DIBIBEST_MAX_CONNECTIONS`: how many connections are served at once. Past it the server stops accepting,
+    /// and further connections wait in the queue of the operating system until one closes.
+    pub max_connections: usize,
     /// `DIBIBEST_PUBLIC_URL`: the origin people use to reach the server, such as `https://dibibest.codecora.dev`.
     /// The redirect address registered with the provider, the `Secure` flag of cookies and the same-origin check
     /// all come from it, never from the `Host` header, which a client can write. Needed when sign-in is on.
@@ -118,6 +121,7 @@ impl Default for Config {
             // request sent on it.
             header_timeout: Duration::from_secs(120),
             request_timeout: Duration::from_secs(30),
+            max_connections: 1024,
             public_url: None,
             issuer: None,
             oidc: None,
@@ -238,6 +242,16 @@ impl Config {
                 .map_or(d.shutdown_grace, Duration::from_secs),
             header_timeout: seconds("DIBIBEST_HEADER_TIMEOUT_SECS", d.header_timeout)?,
             request_timeout: seconds("DIBIBEST_REQUEST_TIMEOUT_SECS", d.request_timeout)?,
+            max_connections: match number("DIBIBEST_MAX_CONNECTIONS")? {
+                None => d.max_connections,
+                Some(n @ 1..=1_000_000) => to_usize("DIBIBEST_MAX_CONNECTIONS", n)?,
+                Some(_) => {
+                    return Err(ConfigError {
+                        var: "DIBIBEST_MAX_CONNECTIONS",
+                        reason: "must be between 1 and 1000000".into(),
+                    })
+                }
+            },
             public_url,
             issuer,
             oidc,

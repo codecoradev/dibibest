@@ -103,6 +103,7 @@ async fn start(configure: impl FnOnce(&mut Config)) -> Server {
         listener,
         router_with(state, misbehaving()),
         config.header_timeout,
+        config.max_connections,
         config.shutdown_grace,
         async move {
             let _ = stopped.await;
@@ -557,6 +558,39 @@ async fn the_server_that_main_runs_closes_a_half_sent_request_after_the_configur
     timeout(CEILING, task).await.unwrap().unwrap().unwrap();
 }
 
+/// `bind` and `Bound::run` must also hand the configured cap on connections to the accept loop.
+#[tokio::test]
+async fn the_server_that_main_runs_honours_the_configured_cap_on_connections() {
+    let (addr, _config, stop, task, _dir) = run_bound(|c| {
+        c.max_connections = 1;
+        c.shutdown_grace = Duration::from_millis(300);
+    })
+    .await;
+    let mut first = TcpStream::connect(addr).await.unwrap();
+    first
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
+        .await
+        .unwrap();
+    let mut buf = [0u8; 12];
+    timeout(CEILING, first.read_exact(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    let mut second = TcpStream::connect(addr).await.unwrap();
+    second
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut out = Vec::new();
+    let early = timeout(Duration::from_millis(500), second.read_to_end(&mut out)).await;
+    assert!(early.is_err(), "served beyond the cap: {out:?}");
+    drop(first);
+    let (reply, _) = until_closed(&mut second).await;
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    stop.send(()).unwrap();
+    timeout(CEILING, task).await.unwrap().unwrap().unwrap();
+}
+
 #[tokio::test]
 async fn shutdown_waits_for_a_request_in_flight_and_lets_it_finish() {
     let mut server = start(|c| {
@@ -634,3 +668,56 @@ async fn shutdown_cuts_off_a_client_that_is_still_sending_its_headers() {
 
 #[allow(dead_code)]
 fn assert_send<F: Future + Send>(_: &F) {}
+
+// ── the cap on open connections ─────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn connections_over_the_cap_wait_to_be_accepted_until_one_closes() {
+    let mut server = start(|c| c.max_connections = 2).await;
+    // two connections fill the cap; each has been served, so each is certainly accepted
+    let mut held = Vec::new();
+    for _ in 0..2 {
+        let mut s = TcpStream::connect(server.addr).await.unwrap();
+        s.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = [0u8; 12];
+        timeout(CEILING, s.read_exact(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf, b"HTTP/1.1 200");
+        held.push(s);
+    }
+    // a third is let into the queue of the operating system but not served
+    let mut third = TcpStream::connect(server.addr).await.unwrap();
+    third
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut out = Vec::new();
+    let early = timeout(Duration::from_millis(500), third.read_to_end(&mut out)).await;
+    assert!(early.is_err(), "served while the cap was full: {out:?}");
+    // one of the two goes away and the third is served
+    drop(held.pop());
+    let (reply, _) = until_closed(&mut third).await;
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    server.stop();
+    server.finished().await;
+}
+
+#[tokio::test]
+async fn a_server_at_its_cap_still_stops_when_told_to() {
+    let mut server = start(|c| c.max_connections = 1).await;
+    let mut s = TcpStream::connect(server.addr).await.unwrap();
+    s.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
+        .await
+        .unwrap();
+    let mut buf = [0u8; 12];
+    timeout(CEILING, s.read_exact(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    server.stop();
+    server.finished().await;
+}

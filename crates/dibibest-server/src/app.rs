@@ -25,6 +25,7 @@ pub struct AppState {
     pub max_body_bytes: usize,
     pub header_timeout: std::time::Duration,
     pub request_timeout: std::time::Duration,
+    pub max_connections: usize,
     pub auth: Arc<crate::auth::Auth>,
 }
 
@@ -38,6 +39,7 @@ impl AppState {
             max_body_bytes: config.max_body_bytes,
             header_timeout: config.header_timeout,
             request_timeout: config.request_timeout,
+            max_connections: config.max_connections,
             auth: Arc::new(crate::auth::Auth::new(config)),
         }
     }
