@@ -21,8 +21,8 @@ fn nothing_set_gives_safe_defaults() {
     );
     assert_eq!(c.data_dir, PathBuf::from("./data"));
     assert_eq!(c.web_dir, PathBuf::from("./web"));
-    assert!(
-        !c.trust_proxy,
+    assert_eq!(
+        c.trusted_proxies, 0,
         "forwarded headers are not trusted by default"
     );
     assert_eq!(c.rate_per_minute, 600);
@@ -35,7 +35,7 @@ fn every_setting_is_read_from_its_variable() {
         ("DIBIBEST_ADDR", "0.0.0.0:9000"),
         ("DIBIBEST_DATA_DIR", "/data"),
         ("DIBIBEST_WEB_DIR", "/app/web"),
-        ("DIBIBEST_TRUST_PROXY", "true"),
+        ("DIBIBEST_TRUSTED_PROXIES", "2"),
         ("DIBIBEST_RATE_PER_MINUTE", "120"),
         ("DIBIBEST_MAX_BODY_BYTES", "4096"),
         ("DIBIBEST_SHUTDOWN_GRACE_SECS", "7"),
@@ -44,7 +44,7 @@ fn every_setting_is_read_from_its_variable() {
     assert_eq!(c.addr.to_string(), "0.0.0.0:9000");
     assert_eq!(c.data_dir, PathBuf::from("/data"));
     assert_eq!(c.web_dir, PathBuf::from("/app/web"));
-    assert!(c.trust_proxy);
+    assert_eq!(c.trusted_proxies, 2);
     assert_eq!(c.rate_per_minute, 120);
     assert_eq!(c.max_body_bytes, 4096);
     assert_eq!(c.shutdown_grace, Duration::from_secs(7));
@@ -54,7 +54,9 @@ fn every_setting_is_read_from_its_variable() {
 fn a_bad_value_is_an_error_that_names_the_variable() {
     for (var, bad) in [
         ("DIBIBEST_ADDR", "not an address"),
-        ("DIBIBEST_TRUST_PROXY", "maybe"),
+        ("DIBIBEST_TRUSTED_PROXIES", "maybe"),
+        ("DIBIBEST_TRUSTED_PROXIES", "-1"),
+        ("DIBIBEST_TRUSTED_PROXIES", "99"),
         ("DIBIBEST_RATE_PER_MINUTE", "-1"),
         ("DIBIBEST_RATE_PER_MINUTE", "0"),
         ("DIBIBEST_MAX_BODY_BYTES", "lots"),
@@ -62,23 +64,5 @@ fn a_bad_value_is_an_error_that_names_the_variable() {
     ] {
         let err = lookup(&[(var, bad)]).unwrap_err().to_string();
         assert!(err.contains(var), "{var}={bad} gave: {err}");
-    }
-}
-
-#[test]
-fn trust_proxy_accepts_the_usual_spellings() {
-    for yes in ["1", "true", "TRUE", "yes"] {
-        assert!(
-            lookup(&[("DIBIBEST_TRUST_PROXY", yes)])
-                .unwrap()
-                .trust_proxy,
-            "{yes}"
-        );
-    }
-    for no in ["0", "false", "no"] {
-        assert!(
-            !lookup(&[("DIBIBEST_TRUST_PROXY", no)]).unwrap().trust_proxy,
-            "{no}"
-        );
     }
 }

@@ -16,9 +16,10 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// `DIBIBEST_WEB_DIR`: the built web app (the output of `vite build`).
     pub web_dir: PathBuf,
-    /// `DIBIBEST_TRUST_PROXY`: read the client address from the last `X-Forwarded-For` entry, the one the
-    /// reverse proxy appended. Off by default, because a client can send that header itself.
-    pub trust_proxy: bool,
+    /// `DIBIBEST_TRUSTED_PROXIES`: how many reverse proxies stand in front of the server (0 to 16). With N, the
+    /// client is the Nth entry from the end of `X-Forwarded-For`: the proxies appended those entries, everything
+    /// before them was written by the client. 0, the default, ignores the header, because a client can send it.
+    pub trusted_proxies: usize,
     /// `DIBIBEST_RATE_PER_MINUTE`: requests per client per minute (also the burst size).
     pub rate_per_minute: u32,
     /// `DIBIBEST_MAX_BODY_BYTES`: largest request body.
@@ -33,7 +34,7 @@ impl Default for Config {
             addr: SocketAddr::from(([127, 0, 0, 1], 8080)),
             data_dir: PathBuf::from("./data"),
             web_dir: PathBuf::from("./web"),
-            trust_proxy: false,
+            trusted_proxies: 0,
             rate_per_minute: 600,
             max_body_bytes: 1024 * 1024,
             shutdown_grace: Duration::from_secs(20),
@@ -86,18 +87,15 @@ impl Config {
                 reason: "must be at least 1".into(),
             });
         }
-        let trust_proxy = match value("DIBIBEST_TRUST_PROXY") {
-            None => d.trust_proxy,
-            Some(v) => match v.trim().to_ascii_lowercase().as_str() {
-                "1" | "true" | "yes" => true,
-                "0" | "false" | "no" => false,
-                other => {
-                    return Err(ConfigError {
-                        var: "DIBIBEST_TRUST_PROXY",
-                        reason: format!("`{other}` is not true or false"),
-                    });
-                }
-            },
+        let trusted_proxies = match number("DIBIBEST_TRUSTED_PROXIES")? {
+            None => d.trusted_proxies,
+            Some(n) if n <= 16 => n as usize,
+            Some(_) => {
+                return Err(ConfigError {
+                    var: "DIBIBEST_TRUSTED_PROXIES",
+                    reason: "more than 16 proxies in front is not believable".into(),
+                });
+            }
         };
         let to_u32 = |var: &'static str, n: u64| {
             u32::try_from(n).map_err(|_| ConfigError {
@@ -115,7 +113,7 @@ impl Config {
             addr: parsed("DIBIBEST_ADDR")?.unwrap_or(d.addr),
             data_dir: value("DIBIBEST_DATA_DIR").map_or(d.data_dir, PathBuf::from),
             web_dir: value("DIBIBEST_WEB_DIR").map_or(d.web_dir, PathBuf::from),
-            trust_proxy,
+            trusted_proxies,
             rate_per_minute: match rate {
                 Some(n) => to_u32("DIBIBEST_RATE_PER_MINUTE", n)?,
                 None => d.rate_per_minute,

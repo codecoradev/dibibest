@@ -1,5 +1,5 @@
-use dibibest_server::bind;
 use dibibest_server::config::Config;
+use dibibest_server::{bind, shutdown_signal};
 use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
 
@@ -35,22 +35,4 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-/// Ctrl-C, or SIGTERM (what `docker stop` sends).
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
-    #[cfg(unix)]
-    let term = async {
-        if let Ok(mut s) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        {
-            s.recv().await;
-        }
-    };
-    #[cfg(not(unix))]
-    let term = std::future::pending::<()>();
-    tokio::select! { () = ctrl_c => {}, () = term => {} }
-    tracing::info!("shutting down");
 }

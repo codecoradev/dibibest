@@ -89,12 +89,15 @@ already mounts them, so a stage adds routes without editing the composition in `
   A route of the app (`/p/<id>`) gets `index.html`; a missing file with an extension is a 404; `/v1`, `/auth`, `/mcp` and
   `/.well-known` answer a JSON 404, never the app. Hashed output under `/_app/immutable/` is cached for a year, the rest
   is revalidated. A path cannot leave the directory (`..`, backslash, NUL, symlinks that resolve outside).
-- **Limits in front of everything:** a token bucket per client address (429 with `Retry-After`) and a request body limit
-  (413). Behind a reverse proxy set `DIBIBEST_TRUST_PROXY=true`: the client is then the **last** `X-Forwarded-For` entry,
-  the one the proxy appended. Entries before it are written by the client and are ignored. Without that setting the
-  header is ignored altogether.
-- **Shutdown** (SIGTERM or Ctrl-C): stop taking connections, wait up to `DIBIBEST_SHUTDOWN_GRACE_SECS` for requests in
+- **Limits in front of everything:** a token bucket per client (429 with `Retry-After`) and a request body limit (413).
+  An IPv6 client is its /64 network, because one person owns 2^64 addresses there and could otherwise take a fresh
+  bucket on every request. Behind reverse proxies set `DIBIBEST_TRUSTED_PROXIES=N`: the client is then the Nth entry from
+  the end of `X-Forwarded-For`, counting every header line (a proxy may add a line instead of extending the client's).
+  The proxies wrote the last N entries; everything before was written by the client and is ignored. With fewer than N
+  entries, or an entry that is not an address, the header is not believed and the connection's own address counts. At 0,
+  the default, the header is ignored altogether. Cloudflare in front of Traefik is N=2.
+- **Shutdown** (SIGTERM or Ctrl-C; a handler that cannot be installed is logged and never counts as a shutdown request): stop taking connections, wait up to `DIBIBEST_SHUTDOWN_GRACE_SECS` for requests in
   flight, let the store flush its writer, release the lock, exit 0.
 - **Configuration** is environment only: `DIBIBEST_ADDR` (default `127.0.0.1:8080`), `DIBIBEST_DATA_DIR`,
-  `DIBIBEST_WEB_DIR`, `DIBIBEST_TRUST_PROXY`, `DIBIBEST_RATE_PER_MINUTE`, `DIBIBEST_MAX_BODY_BYTES`,
+  `DIBIBEST_WEB_DIR`, `DIBIBEST_TRUSTED_PROXIES`, `DIBIBEST_RATE_PER_MINUTE`, `DIBIBEST_MAX_BODY_BYTES`,
   `DIBIBEST_SHUTDOWN_GRACE_SECS`. A blank value counts as unset; a bad value stops the start and names the variable.

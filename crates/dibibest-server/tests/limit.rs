@@ -97,7 +97,7 @@ async fn probes_are_never_rate_limited() {
 async fn a_forwarded_header_is_ignored_unless_the_proxy_is_trusted() {
     let mut fx = fixture();
     fx.config.rate_per_minute = 2;
-    fx.config.trust_proxy = false;
+    fx.config.trusted_proxies = 0;
     let app = app(&fx);
     // A client that changes its own X-Forwarded-For must not get a fresh budget each time.
     let mut refused = 0;
@@ -117,7 +117,7 @@ async fn a_forwarded_header_is_ignored_unless_the_proxy_is_trusted() {
 async fn behind_a_trusted_proxy_each_forwarded_client_has_its_own_budget() {
     let mut fx = fixture();
     fx.config.rate_per_minute = 2;
-    fx.config.trust_proxy = true;
+    fx.config.trusted_proxies = 1;
     let app = app(&fx);
     for _ in 0..2 {
         assert_eq!(send(&app, from("1.1.1.1")).await.status(), StatusCode::OK);
@@ -133,7 +133,7 @@ async fn behind_a_trusted_proxy_each_forwarded_client_has_its_own_budget() {
 async fn the_proxys_own_entry_is_the_one_that_counts() {
     let mut fx = fixture();
     fx.config.rate_per_minute = 1;
-    fx.config.trust_proxy = true;
+    fx.config.trusted_proxies = 1;
     let app = app(&fx);
     // "6.6.6.6" is what the client claimed; "1.1.1.1" is what the trusted proxy appended.
     assert_eq!(
@@ -144,5 +144,101 @@ async fn the_proxys_own_entry_is_the_one_that_counts() {
         send(&app, from("7.7.7.7, 1.1.1.1")).await.status(),
         StatusCode::TOO_MANY_REQUESTS,
         "a client-supplied entry must not choose the bucket"
+    );
+}
+
+#[test]
+fn addresses_in_one_ipv6_network_share_a_bucket() {
+    let limiter = RateLimiter::new(1);
+    let t0 = Instant::now();
+    limiter.check_at(ip("2001:db8:0:1::1"), t0).unwrap();
+    // Another address of the same /64: a client that owns the network must not get a fresh budget per address.
+    assert!(limiter
+        .check_at(ip("2001:db8:0:1:ffff:ffff:ffff:ffff"), t0)
+        .is_err());
+    // A different /64 is a different client.
+    assert!(limiter.check_at(ip("2001:db8:0:2::1"), t0).is_ok());
+}
+
+#[test]
+fn an_ipv4_mapped_address_is_the_same_client_as_the_ipv4_address() {
+    let limiter = RateLimiter::new(1);
+    let t0 = Instant::now();
+    limiter.check_at(ip("1.2.3.4"), t0).unwrap();
+    assert!(limiter.check_at(ip("::ffff:1.2.3.4"), t0).is_err());
+}
+
+fn lines(values: &[&str]) -> Request<Body> {
+    let mut b = Request::builder().uri("/robots.txt");
+    for v in values {
+        b = b.header("x-forwarded-for", *v);
+    }
+    b.body(Body::empty()).unwrap()
+}
+
+#[tokio::test]
+async fn a_proxy_that_adds_its_own_header_line_is_still_the_one_that_counts() {
+    let mut fx = fixture();
+    fx.config.rate_per_minute = 1;
+    fx.config.trusted_proxies = 1;
+    let app = app(&fx);
+    // The client wrote the first line; the proxy added the second.
+    assert_eq!(
+        send(&app, lines(&["6.6.6.6", "1.1.1.1"])).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&app, lines(&["7.7.7.7", "1.1.1.1"])).await.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the first header line is the client's and must not choose the bucket"
+    );
+}
+
+#[tokio::test]
+async fn with_two_trusted_proxies_the_client_is_the_second_entry_from_the_end() {
+    let mut fx = fixture();
+    fx.config.rate_per_minute = 1;
+    fx.config.trusted_proxies = 2;
+    let app = app(&fx);
+    // junk written by the client, the client as the first proxy saw it, the first proxy as the second saw it
+    assert_eq!(
+        send(&app, from("6.6.6.6, 1.1.1.1, 9.9.9.9")).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&app, from("7.7.7.7, 1.1.1.1, 9.9.9.9")).await.status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        send(&app, from("7.7.7.7, 2.2.2.2, 9.9.9.9")).await.status(),
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn a_header_with_fewer_entries_than_trusted_proxies_is_not_believed() {
+    let mut fx = fixture();
+    fx.config.rate_per_minute = 1;
+    fx.config.trusted_proxies = 2;
+    let app = app(&fx);
+    // One entry cannot have been written by two proxies, so the connection's own address counts: both requests
+    // share one bucket whatever the header says.
+    assert_eq!(send(&app, from("1.1.1.1")).await.status(), StatusCode::OK);
+    assert_eq!(
+        send(&app, from("2.2.2.2")).await.status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[tokio::test]
+async fn an_entry_that_is_not_an_address_is_not_believed() {
+    let mut fx = fixture();
+    fx.config.rate_per_minute = 1;
+    fx.config.trusted_proxies = 1;
+    let app = app(&fx);
+    assert_eq!(send(&app, from("not-an-ip")).await.status(), StatusCode::OK);
+    assert_eq!(
+        send(&app, from("also-not")).await.status(),
+        StatusCode::TOO_MANY_REQUESTS
     );
 }

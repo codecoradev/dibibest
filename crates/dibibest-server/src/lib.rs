@@ -24,6 +24,36 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
+/// Waits for a signal. If the signal cannot be waited for at all (the handler failed to register, the stream
+/// closed) it logs that and never completes: a handler that could not be installed must not look like a request
+/// to shut down.
+pub async fn signal_or_never(
+    name: &'static str,
+    source: impl Future<Output = std::io::Result<()>>,
+) {
+    if let Err(e) = source.await {
+        tracing::error!("cannot wait for {name}: {e}; it will not stop the server");
+        std::future::pending::<()>().await;
+    }
+}
+
+/// Completes on Ctrl-C or SIGTERM (what `docker stop` sends).
+pub async fn shutdown_signal() {
+    let ctrl_c = signal_or_never("Ctrl-C", tokio::signal::ctrl_c());
+    #[cfg(unix)]
+    let term = signal_or_never("SIGTERM", async {
+        let mut s = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        s.recv().await.map_or_else(
+            || Err(std::io::Error::other("the signal stream closed")),
+            |()| Ok(()),
+        )
+    });
+    #[cfg(not(unix))]
+    let term = std::future::pending::<()>();
+    tokio::select! { () = ctrl_c => {}, () = term => {} }
+    tracing::info!("shutting down");
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
     #[error(transparent)]

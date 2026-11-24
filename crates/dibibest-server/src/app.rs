@@ -21,7 +21,7 @@ pub struct AppState {
     pub store: Arc<SqliteStore>,
     pub web_dir: Arc<PathBuf>,
     pub limiter: Arc<RateLimiter>,
-    pub trust_proxy: bool,
+    pub trusted_proxies: usize,
     pub max_body_bytes: usize,
 }
 
@@ -31,7 +31,7 @@ impl AppState {
             store,
             web_dir: Arc::new(config.web_dir.clone()),
             limiter: Arc::new(RateLimiter::new(config.rate_per_minute)),
-            trust_proxy: config.trust_proxy,
+            trusted_proxies: config.trusted_proxies,
             max_body_bytes: config.max_body_bytes,
         }
     }
@@ -92,18 +92,26 @@ async fn readyz(State(state): State<AppState>) -> Response {
     (status, Json(body)).into_response()
 }
 
-/// The address the limit is counted against. Behind a trusted proxy it is the last `X-Forwarded-For` entry, the
-/// one the proxy added; entries before it were written by the client and are ignored.
-fn client_ip(req: &Request, trust_proxy: bool) -> IpAddr {
-    if trust_proxy {
-        let forwarded = req
+/// The address the limit is counted against.
+///
+/// With `trusted_proxies = N`, it is the Nth entry from the end of `X-Forwarded-For`, counting every header line
+/// (a proxy may add a line of its own instead of extending the client's). The proxies wrote the last N entries;
+/// everything before them was written by the client and is ignored. If the header has fewer than N entries, or the
+/// entry is not an address, the header is not believed and the connection's own address counts.
+fn client_ip(req: &Request, trusted_proxies: usize) -> IpAddr {
+    if trusted_proxies > 0 {
+        let entries: Vec<&str> = req
             .headers()
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.rsplit(',').next())
-            .and_then(|s| s.trim().parse().ok());
-        if let Some(ip) = forwarded {
-            return ip;
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|line| line.split(','))
+            .map(str::trim)
+            .collect();
+        if entries.len() >= trusted_proxies {
+            if let Ok(ip) = entries[entries.len() - trusted_proxies].parse() {
+                return ip;
+            }
         }
     }
     req.extensions()
@@ -118,7 +126,7 @@ async fn rate_limit(State(state): State<AppState>, req: Request, next: Next) -> 
     }
     match state
         .limiter
-        .check_at(client_ip(&req, state.trust_proxy), Instant::now())
+        .check_at(client_ip(&req, state.trusted_proxies), Instant::now())
     {
         Ok(()) => next.run(req).await,
         Err(wait) => {
