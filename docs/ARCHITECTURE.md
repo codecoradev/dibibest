@@ -93,9 +93,11 @@ already mounts them, so a stage adds routes without editing the composition in `
   An IPv6 client is its /64 network, because one person owns 2^64 addresses there and could otherwise take a fresh
   bucket on every request. Behind reverse proxies set `DIBIBEST_TRUSTED_PROXIES=N`: the client is then the Nth entry from
   the end of `X-Forwarded-For`, counting every header line (a proxy may add a line instead of extending the client's).
-  The proxies wrote the last N entries; everything before was written by the client and is ignored. With fewer than N
-  entries, or an entry that is not an address, the header is not believed and the connection's own address counts. At 0,
-  the default, the header is ignored altogether. Cloudflare in front of Traefik is N=2.
+  The proxies wrote the last N entries; everything before was written by the client and is ignored. With no header, or
+  fewer than N entries, the request did not come through the proxies and the connection's own address counts (so a `curl`
+  from the host works). A line that cannot be read as text, or a chosen entry that is not an address, makes the header
+  malformed: such requests share one separate bucket, so they can neither use up the budget of direct requests nor rotate
+  into fresh buckets. At 0, the default, the header is ignored altogether. Cloudflare in front of Traefik is N=2.
 - **Shutdown** (SIGTERM or Ctrl-C; a handler that cannot be installed is logged and never counts as a shutdown request): stop taking connections, wait up to `DIBIBEST_SHUTDOWN_GRACE_SECS` for requests in
   flight, let the store flush its writer, release the lock, exit 0.
 - **Configuration** is environment only: `DIBIBEST_ADDR` (default `127.0.0.1:8080`), `DIBIBEST_DATA_DIR`,

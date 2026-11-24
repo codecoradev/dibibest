@@ -10,7 +10,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use dibibest_store::{SqliteStore, StoreError};
 use serde_json::json;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -92,26 +92,35 @@ async fn readyz(State(state): State<AppState>) -> Response {
     (status, Json(body)).into_response()
 }
 
+/// The key of every request whose forwarded header cannot be trusted at all. It is not a real client address, so
+/// those requests share one bucket and are limited together, apart from the buckets of real clients and of
+/// requests that reach the server directly.
+const MALFORMED: IpAddr = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
+
 /// The address the limit is counted against.
 ///
 /// With `trusted_proxies = N`, it is the Nth entry from the end of `X-Forwarded-For`, counting every header line
 /// (a proxy may add a line of its own instead of extending the client's). The proxies wrote the last N entries;
-/// everything before them was written by the client and is ignored. If the header has fewer than N entries, or the
-/// entry is not an address, the header is not believed and the connection's own address counts.
+/// everything before them was written by the client and is ignored.
+///
+/// - No header, or fewer entries than N: the request did not come through the proxies, so the connection's own
+///   address counts (a `curl` from the host works).
+/// - A line that cannot be read as text, or the chosen entry is not an address: the header is malformed and the
+///   request gets the shared [`MALFORMED`] key. It is never charged to the proxy's own address, where it could use
+///   up the budget of requests that reach the server directly, and it never gets a bucket of its own to rotate.
 fn client_ip(req: &Request, trusted_proxies: usize) -> IpAddr {
     if trusted_proxies > 0 {
-        let entries: Vec<&str> = req
-            .headers()
-            .get_all("x-forwarded-for")
-            .iter()
-            .filter_map(|v| v.to_str().ok())
-            .flat_map(|line| line.split(','))
-            .map(str::trim)
-            .collect();
+        let mut entries: Vec<&str> = Vec::new();
+        for line in req.headers().get_all("x-forwarded-for") {
+            let Ok(line) = line.to_str() else {
+                return MALFORMED;
+            };
+            entries.extend(line.split(',').map(str::trim));
+        }
         if entries.len() >= trusted_proxies {
-            if let Ok(ip) = entries[entries.len() - trusted_proxies].parse() {
-                return ip;
-            }
+            return entries[entries.len() - trusted_proxies]
+                .parse()
+                .unwrap_or(MALFORMED);
         }
     }
     req.extensions()

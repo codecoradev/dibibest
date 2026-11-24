@@ -242,3 +242,78 @@ async fn an_entry_that_is_not_an_address_is_not_believed() {
         StatusCode::TOO_MANY_REQUESTS
     );
 }
+
+fn raw_forwarded(bytes: &[u8]) -> Request<Body> {
+    Request::builder()
+        .uri("/robots.txt")
+        .header(
+            "x-forwarded-for",
+            axum::http::HeaderValue::from_bytes(bytes).unwrap(),
+        )
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_header_that_cannot_be_read_is_charged_to_its_own_bucket_not_the_proxys() {
+    let mut fx = fixture();
+    fx.config.rate_per_minute = 2;
+    fx.config.trusted_proxies = 1;
+    let app = app(&fx);
+    // Unreadable bytes (not visible ASCII): all such requests share one bucket and use it up...
+    for _ in 0..2 {
+        assert_eq!(
+            send(&app, raw_forwarded(b"\xff\xfe")).await.status(),
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        send(&app, raw_forwarded(b"\xff\xfe")).await.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the malformed requests are limited together"
+    );
+    // ...without touching the bucket of a request that reaches the server directly (no header at all).
+    assert_eq!(get(&app, "/robots.txt").await.status(), StatusCode::OK);
+    assert_eq!(get(&app, "/robots.txt").await.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn an_entry_that_is_not_an_address_does_not_use_up_the_direct_bucket_either() {
+    let mut fx = fixture();
+    fx.config.rate_per_minute = 2;
+    fx.config.trusted_proxies = 1;
+    let app = app(&fx);
+    for _ in 0..3 {
+        let _ = send(&app, from("not-an-ip")).await;
+    }
+    assert_eq!(get(&app, "/robots.txt").await.status(), StatusCode::OK);
+    assert_eq!(get(&app, "/robots.txt").await.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn an_unreadable_line_before_the_proxys_own_line_does_not_buy_a_better_bucket() {
+    let mut fx = fixture();
+    fx.config.rate_per_minute = 1;
+    fx.config.trusted_proxies = 1;
+    let app = app(&fx);
+    let with_junk_line = |client: &'static str| {
+        Request::builder()
+            .uri("/robots.txt")
+            .header(
+                "x-forwarded-for",
+                axum::http::HeaderValue::from_bytes(b"\xff").unwrap(),
+            )
+            .header("x-forwarded-for", client)
+            .body(Body::empty())
+            .unwrap()
+    };
+    assert_eq!(
+        send(&app, with_junk_line("1.1.1.1")).await.status(),
+        StatusCode::OK
+    );
+    // A second client behind the same proxy with the same junk is limited too: junk never gives a fresh bucket.
+    assert_eq!(
+        send(&app, with_junk_line("2.2.2.2")).await.status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
