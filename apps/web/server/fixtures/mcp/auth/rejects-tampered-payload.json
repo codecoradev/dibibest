@@ -1,0 +1,10 @@
+{
+  "title": "a payload changed after signing: 401 invalid_token",
+  "steps": [
+    {
+      "token": {"form": "tampered"},
+      "request": {"body": {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}},
+      "expect": {"status": 401, "headers": {"www-authenticate": {"contains": "error=\"invalid_token\""}}}
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "title": "a caller without an Origin gets no CORS headers",
+  "steps": [
+    {
+      "request": {"body": {"jsonrpc": "2.0", "id": 1, "method": "ping"}},
+      "expect": {"status": 200, "headers": {"access-control-allow-origin": null}}
+    }
+  ]
+}

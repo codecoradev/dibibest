@@ -1,0 +1,14 @@
+{
+  "title": "the provider's keys are fetched once for two requests",
+  "steps": [
+    {
+      "request": {"body": {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}},
+      "expect": {"status": 200}
+    },
+    {
+      "request": {"body": {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}},
+      "expect": {"status": 200}
+    }
+  ],
+  "after": {"jwksFetches": 1}
+}

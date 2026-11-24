@@ -1,0 +1,12 @@
+{
+  "title": "with a token the browser origin is served and gets CORS",
+  "steps": [
+    {
+      "request": {
+        "headers": {"origin": "https://claude.ai"},
+        "body": {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+      },
+      "expect": {"status": 200, "headers": {"access-control-allow-origin": "https://claude.ai"}}
+    }
+  ]
+}

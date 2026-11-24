@@ -1,0 +1,11 @@
+{
+  "title": "alg none when the provider's key does not list an alg: only the allow-list stops it",
+  "config": {"keyAlg": false},
+  "steps": [
+    {
+      "token": {"header": {"alg": "none"}},
+      "request": {"body": {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}},
+      "expect": {"status": 401, "headers": {"www-authenticate": {"contains": "error=\"invalid_token\""}}}
+    }
+  ]
+}

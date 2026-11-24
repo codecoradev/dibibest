@@ -1,0 +1,10 @@
+{
+  "title": "a provider whose key lists no alg still works for an honest RS256 token",
+  "config": {"keyAlg": false},
+  "steps": [
+    {
+      "request": {"body": {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}},
+      "expect": {"status": 200}
+    }
+  ]
+}

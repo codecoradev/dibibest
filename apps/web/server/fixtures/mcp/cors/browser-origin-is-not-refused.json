@@ -1,0 +1,20 @@
+{
+  "title": "no token from a browser origin: 401, readable cross-origin",
+  "steps": [
+    {
+      "token": null,
+      "request": {
+        "headers": {"origin": "https://claude.ai"},
+        "body": {"jsonrpc": "2.0", "id": 1, "method": "initialize"}
+      },
+      "expect": {
+        "status": 401,
+        "headers": {
+          "access-control-allow-origin": "https://claude.ai",
+          "access-control-expose-headers": {"contains": "www-authenticate"},
+          "www-authenticate": {"contains": "resource_metadata="}
+        }
+      }
+    }
+  ]
+}

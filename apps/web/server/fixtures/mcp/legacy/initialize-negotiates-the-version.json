@@ -1,0 +1,26 @@
+{
+  "title": "initialize answers the version the client asked for",
+  "steps": [
+    {
+      "request": {
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "initialize",
+          "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "claude-ai", "version": "0.1"}
+          }
+        }
+      },
+      "expect": {
+        "status": 200,
+        "body": [
+          {"path": ["result", "protocolVersion"], "equals": "2025-06-18"},
+          {"path": ["result", "capabilities"], "equals": {"tools": {}}}
+        ]
+      }
+    }
+  ]
+}

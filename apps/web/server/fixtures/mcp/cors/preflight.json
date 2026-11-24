@@ -1,0 +1,21 @@
+{
+  "title": "the preflight is answered 204 and allows the headers MCP clients send",
+  "steps": [
+    {
+      "token": null,
+      "request": {
+        "method": "OPTIONS",
+        "headers": {"origin": "https://claude.ai", "access-control-request-method": "POST"}
+      },
+      "expect": {"status": 204, "headers": {"access-control-allow-headers": {"contains": "authorization"}}}
+    },
+    {
+      "token": null,
+      "request": {
+        "method": "OPTIONS",
+        "headers": {"origin": "https://claude.ai", "access-control-request-method": "POST"}
+      },
+      "expect": {"status": 204, "headers": {"access-control-allow-headers": {"contains": "mcp-protocol-version"}}}
+    }
+  ]
+}

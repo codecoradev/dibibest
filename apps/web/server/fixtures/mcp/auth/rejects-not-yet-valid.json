@@ -1,0 +1,10 @@
+{
+  "title": "a token that is not valid yet (nbf): 401 invalid_token",
+  "steps": [
+    {
+      "token": {"claims": {"nbf": "$now+3600"}},
+      "request": {"body": {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}},
+      "expect": {"status": 401, "headers": {"www-authenticate": {"contains": "error=\"invalid_token\""}}}
+    }
+  ]
+}

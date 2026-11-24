@@ -1,0 +1,10 @@
+{
+  "title": "an unknown suffix is a 404, not the app",
+  "steps": [
+    {
+      "token": null,
+      "request": {"method": "GET", "path": "/.well-known/oauth-authorization-server/other"},
+      "expect": {"status": 404}
+    }
+  ]
+}
