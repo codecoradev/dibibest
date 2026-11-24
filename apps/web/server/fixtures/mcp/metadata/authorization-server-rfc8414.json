@@ -1,0 +1,17 @@
+{
+  "title": "serves the provider's own document unchanged at /.well-known/oauth-authorization-server",
+  "steps": [
+    {
+      "token": null,
+      "request": {"method": "GET", "path": "/.well-known/oauth-authorization-server"},
+      "expect": {
+        "status": 200,
+        "headers": {"content-type": {"contains": "application/json"}},
+        "body": [
+          {"path": ["issuer"], "equals": "$issuer"},
+          {"path": ["authorization_endpoint"], "equals": "$issuer/oauth2/authorize"}
+        ]
+      }
+    }
+  ]
+}

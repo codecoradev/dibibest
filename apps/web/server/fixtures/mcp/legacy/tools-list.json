@@ -1,0 +1,21 @@
+{
+  "title": "tools/list in the legacy era lists the three tools, in order",
+  "steps": [
+    {
+      "request": {
+        "headers": {"mcp-protocol-version": "2025-06-18"},
+        "body": {"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}}
+      },
+      "expect": {
+        "status": 200,
+        "body": [
+          {
+            "path": ["result", "tools"],
+            "map": "name",
+            "equals": ["convert_schema", "render_diagram", "list_formats"]
+          }
+        ]
+      }
+    }
+  ]
+}

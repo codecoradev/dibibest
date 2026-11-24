@@ -1,0 +1,10 @@
+{
+  "title": "aud may be one string instead of a list",
+  "steps": [
+    {
+      "token": {"claims": {"aud": "$resource"}},
+      "request": {"body": {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}},
+      "expect": {"status": 200}
+    }
+  ]
+}

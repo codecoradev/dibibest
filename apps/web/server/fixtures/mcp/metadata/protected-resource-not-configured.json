@@ -1,0 +1,11 @@
+{
+  "title": "404 when no identity provider is configured",
+  "config": {"oidc": false},
+  "steps": [
+    {
+      "token": null,
+      "request": {"method": "GET", "path": "/.well-known/oauth-protected-resource"},
+      "expect": {"status": 404}
+    }
+  ]
+}

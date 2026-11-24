@@ -1,0 +1,13 @@
+{
+  "title": "no token: 401 pointing at the protected resource metadata",
+  "steps": [
+    {
+      "token": null,
+      "request": {"body": {"jsonrpc": "2.0", "id": 1, "method": "initialize"}},
+      "expect": {
+        "status": 401,
+        "headers": {"www-authenticate": "Bearer resource_metadata=\"$app/.well-known/oauth-protected-resource/mcp\""}
+      }
+    }
+  ]
+}

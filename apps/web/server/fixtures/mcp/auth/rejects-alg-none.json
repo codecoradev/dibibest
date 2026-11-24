@@ -1,0 +1,10 @@
+{
+  "title": "alg none: 401 invalid_token",
+  "steps": [
+    {
+      "token": {"header": {"alg": "none"}},
+      "request": {"body": {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}},
+      "expect": {"status": 401, "headers": {"www-authenticate": {"contains": "error=\"invalid_token\""}}}
+    }
+  ]
+}

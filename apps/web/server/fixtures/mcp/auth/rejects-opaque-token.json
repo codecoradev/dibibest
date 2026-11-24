@@ -1,0 +1,10 @@
+{
+  "title": "an opaque token: 401 invalid_token",
+  "steps": [
+    {
+      "token": {"form": "opaque"},
+      "request": {"body": {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}},
+      "expect": {"status": 401, "headers": {"www-authenticate": {"contains": "error=\"invalid_token\""}}}
+    }
+  ]
+}

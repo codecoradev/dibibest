@@ -1,0 +1,11 @@
+{
+  "title": "an unknown version gets the newest legacy one",
+  "steps": [
+    {
+      "request": {
+        "body": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2030-01-01"}}
+      },
+      "expect": {"status": 200, "body": [{"path": ["result", "protocolVersion"], "equals": "2025-11-25"}]}
+    }
+  ]
+}

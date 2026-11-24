@@ -1,0 +1,16 @@
+{
+  "title": "the same document without the /mcp suffix",
+  "steps": [
+    {
+      "token": null,
+      "request": {"method": "GET", "path": "/.well-known/oauth-protected-resource"},
+      "expect": {
+        "status": 200,
+        "body": [
+          {"path": ["resource"], "equals": "$resource"},
+          {"path": ["authorization_servers"], "equals": ["$issuer"]}
+        ]
+      }
+    }
+  ]
+}
