@@ -15,6 +15,8 @@ use url::Url;
 
 /// How long a discovery document is kept.
 const DISCOVERY_TTL: Duration = Duration::from_secs(3600);
+/// How long the provider's own metadata document is kept before it is fetched again.
+const METADATA_TTL: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone)]
 pub struct Discovery {
@@ -36,20 +38,29 @@ pub struct Provider {
     issuer: String,
     client: Client,
     ttl: Duration,
+    metadata_ttl: Duration,
     cache: Mutex<Option<(Discovery, Instant)>>,
+    metadata: Mutex<Option<(Value, Instant)>>,
 }
 
 impl Provider {
     pub fn new(issuer: &str, client: Client) -> Self {
-        Self::with_ttl(issuer, client, DISCOVERY_TTL)
+        Self::with_ttls(issuer, client, DISCOVERY_TTL, METADATA_TTL)
     }
 
+    /// One lifetime for both the discovery document and the provider's metadata (for tests).
     pub fn with_ttl(issuer: &str, client: Client, ttl: Duration) -> Self {
+        Self::with_ttls(issuer, client, ttl, ttl)
+    }
+
+    pub fn with_ttls(issuer: &str, client: Client, ttl: Duration, metadata_ttl: Duration) -> Self {
         Self {
             issuer: issuer.trim_end_matches('/').to_string(),
             client,
             ttl,
+            metadata_ttl,
             cache: Mutex::new(None),
+            metadata: Mutex::new(None),
         }
     }
 
@@ -83,6 +94,46 @@ impl Provider {
         let found = parse(&doc)?;
         *cache = Some((found.clone(), Instant::now()));
         Ok(found)
+    }
+}
+
+impl Provider {
+    /// The provider's own authorization server metadata (RFC 8414, or its OpenID configuration), unchanged, for
+    /// the MCP origin to hand to clients. Kept for five minutes; if the provider cannot be reached the last copy is
+    /// served, because a stale document beats none. `None` if there has never been one.
+    pub async fn authorization_server_metadata(&self) -> Option<Value> {
+        let mut cache = self.metadata.lock().await;
+        if let Some((doc, at)) = cache.as_ref() {
+            if at.elapsed() < self.metadata_ttl {
+                return Some(doc.clone());
+            }
+        }
+        for name in ["oauth-authorization-server", "openid-configuration"] {
+            let Ok(response) = self
+                .client
+                .get(format!("{}/.well-known/{name}", self.issuer))
+                .header("accept", "application/json")
+                .send()
+                .await
+            else {
+                continue;
+            };
+            if !response.status().is_success() {
+                continue;
+            }
+            let Ok(body) = read_limited(response, MAX_BODY).await else {
+                continue;
+            };
+            let Ok(doc) = serde_json::from_str::<Value>(&body) else {
+                continue;
+            };
+            let named = |k: &str| doc.get(k).is_some_and(Value::is_string);
+            if named("issuer") && named("authorization_endpoint") {
+                *cache = Some((doc.clone(), Instant::now()));
+                return Some(doc);
+            }
+        }
+        cache.as_ref().map(|(doc, _)| doc.clone())
     }
 }
 

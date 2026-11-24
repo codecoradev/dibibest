@@ -244,3 +244,80 @@ fn a_secret_never_shows_up_in_the_debug_output_of_the_config() {
     let text = format!("{:?}", signin(&[]).unwrap());
     assert!(!text.contains("s3cret") && !text.contains(SECRET), "{text}");
 }
+
+// ── the issuer alone is enough for the MCP endpoint ────────────────────────────────────────────────────
+
+#[test]
+fn an_issuer_with_a_public_address_turns_the_mcp_endpoint_on_without_sign_in() {
+    let c = lookup(&[
+        ("DIBIBEST_PUBLIC_URL", "https://dibibest.codecora.dev"),
+        ("DIBIBEST_OIDC_ISSUER", "https://identity.example/api/auth/"),
+    ])
+    .unwrap();
+    assert!(c.oidc.is_none(), "no client credentials: sign-in stays off");
+    assert_eq!(
+        c.issuer.as_deref(),
+        Some("https://identity.example/api/auth")
+    );
+    assert_eq!(c.issuer(), Some("https://identity.example/api/auth"));
+}
+
+#[test]
+fn with_sign_in_on_the_issuer_is_the_same_one() {
+    let c = signin(&[]).unwrap();
+    assert_eq!(c.issuer(), Some("https://identity.example/api/auth"));
+    assert_eq!(c.oidc.unwrap().issuer, "https://identity.example/api/auth");
+}
+
+#[test]
+fn an_issuer_without_a_public_address_is_an_error_because_the_resource_url_comes_from_it() {
+    let err = lookup(&[("DIBIBEST_OIDC_ISSUER", "https://identity.example/api/auth")])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("DIBIBEST_PUBLIC_URL"), "{err}");
+}
+
+#[test]
+fn an_issuer_that_is_not_acceptable_is_refused_even_alone() {
+    for bad in [
+        "http://identity.example/api/auth",
+        "identity.example",
+        "https://u:p@identity.example",
+        "https://identity.example/a?x=1",
+    ] {
+        let err = lookup(&[
+            ("DIBIBEST_PUBLIC_URL", "https://dibibest.codecora.dev"),
+            ("DIBIBEST_OIDC_ISSUER", bad),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("DIBIBEST_OIDC_ISSUER"), "{bad}: {err}");
+    }
+}
+
+#[test]
+fn a_client_setting_without_the_others_is_still_an_error_when_the_issuer_is_there() {
+    for only in [
+        "DIBIBEST_OIDC_CLIENT_ID",
+        "DIBIBEST_OIDC_CLIENT_SECRET",
+        "DIBIBEST_SESSION_SECRET",
+    ] {
+        let value = if only == "DIBIBEST_SESSION_SECRET" {
+            SECRET
+        } else {
+            "x1"
+        };
+        let err = lookup(&[
+            ("DIBIBEST_PUBLIC_URL", "https://dibibest.codecora.dev"),
+            ("DIBIBEST_OIDC_ISSUER", "https://identity.example/api/auth"),
+            (only, value),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("DIBIBEST_"), "{only}: {err}");
+        assert!(
+            !err.contains(only),
+            "the setting that IS set must not be the one blamed ({only}): {err}"
+        );
+    }
+}

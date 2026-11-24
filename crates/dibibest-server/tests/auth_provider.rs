@@ -303,7 +303,142 @@ async fn the_app_has_a_provider_only_when_sign_in_is_configured() {
     );
     assert!(on.auth.provider.is_some());
     assert_eq!(
+        on.auth.issuer.as_deref(),
+        Some("https://identity.example/api/auth")
+    );
+    assert_eq!(off.auth.issuer, None);
+    // an issuer alone (the MCP endpoint, no sign-in for people) gives a provider but no sign-in
+    let alone = AppState::new(
+        Arc::new(SqliteStore::open(dir.path().join("alone.db")).unwrap()),
+        &Config {
+            public_url: Some("https://dibibest.codecora.dev".into()),
+            issuer: Some("https://identity.example/api/auth".into()),
+            ..Config::default()
+        },
+    );
+    assert!(alone.auth.provider.is_some() && alone.auth.oidc.is_none());
+    assert_eq!(
+        alone.auth.issuer.as_deref(),
+        Some("https://identity.example/api/auth")
+    );
+    assert_eq!(
         on.auth.public_origin.as_deref(),
         Some("https://dibibest.codecora.dev")
     );
+}
+
+// ── the provider's own metadata document (for the MCP origin, issue #94) ────────────────────────────────
+
+#[tokio::test]
+async fn the_providers_metadata_is_passed_on_unchanged_and_kept() {
+    let idp = Idp::start().await;
+    let mut doc = idp.state.discovery.lock().unwrap().json.clone().unwrap();
+    doc["x_extra_field"] = json!({"kept": true});
+    idp.set("discovery", Answer::ok(doc));
+    let p = provider(&idp);
+    for _ in 0..2 {
+        let got = p.authorization_server_metadata().await.expect("a document");
+        assert_eq!(
+            got["x_extra_field"],
+            json!({"kept": true}),
+            "fields the server does not know are kept"
+        );
+        assert_eq!(got["issuer"], idp.issuer());
+    }
+    assert_eq!(
+        idp.calls_to("/.well-known/oauth-authorization-server")
+            .len(),
+        1,
+        "the RFC 8414 address is tried first"
+    );
+    assert_eq!(
+        idp.calls_to("/.well-known/openid-configuration").len(),
+        1,
+        "the second answer came from memory"
+    );
+}
+
+#[tokio::test]
+async fn an_old_copy_of_the_metadata_is_refreshed_and_when_the_provider_is_down_it_is_still_served()
+{
+    let idp = Idp::start().await;
+    let p = Provider::with_ttl(
+        &idp.issuer(),
+        client(Duration::from_secs(5)),
+        Duration::from_millis(50),
+    );
+    assert!(p.authorization_server_metadata().await.is_some());
+
+    // once the copy is old, a changed document is fetched and replaces it
+    let mut changed = idp.state.discovery.lock().unwrap().json.clone().unwrap();
+    changed["generation"] = json!(2);
+    idp.set("discovery", Answer::ok(changed));
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert_eq!(
+        p.authorization_server_metadata().await.unwrap()["generation"],
+        2,
+        "an old copy is refreshed"
+    );
+
+    // a provider that is down: the last copy still beats nothing
+    idp.set(
+        "discovery",
+        Answer {
+            status: 500,
+            ..Answer::ok(json!({}))
+        },
+    );
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let stale = p
+        .authorization_server_metadata()
+        .await
+        .expect("the old copy is served while the provider is down");
+    assert_eq!(stale["generation"], 2);
+}
+
+#[tokio::test]
+async fn a_document_that_is_not_a_provider_description_is_not_accepted_and_nothing_to_serve_is_none(
+) {
+    // an error status is not a document, whatever the body looks like
+    let idp = Idp::start().await;
+    let good = idp.state.discovery.lock().unwrap().json.clone().unwrap();
+    idp.set(
+        "discovery",
+        Answer {
+            status: 503,
+            ..Answer::ok(good)
+        },
+    );
+    assert!(provider(&idp)
+        .authorization_server_metadata()
+        .await
+        .is_none());
+    for bad in [
+        json!({"issuer": 5, "authorization_endpoint": "https://x.example/a"}),
+        json!({"issuer": "https://x.example"}),
+        json!({"authorization_endpoint": "https://x.example/a"}),
+        json!([1, 2]),
+    ] {
+        let idp = Idp::start().await;
+        idp.set("discovery", Answer::ok(bad.clone()));
+        assert!(
+            provider(&idp)
+                .authorization_server_metadata()
+                .await
+                .is_none(),
+            "{bad}"
+        );
+    }
+    let idp = Idp::start().await;
+    idp.set(
+        "discovery",
+        Answer {
+            raw: Some("<html>proxy error</html>".into()),
+            ..Answer::ok(json!({}))
+        },
+    );
+    assert!(provider(&idp)
+        .authorization_server_metadata()
+        .await
+        .is_none());
 }
