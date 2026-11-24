@@ -573,6 +573,20 @@ async fn a_document_that_names_an_address_the_server_would_not_use_is_not_served
     }
 }
 
+fn down() -> Answer {
+    Answer {
+        status: 500,
+        ..Answer::ok(json!({}))
+    }
+}
+
+async fn calls_for_metadata(idp: &Idp) -> usize {
+    idp.calls_to("/.well-known/openid-configuration").len()
+        + idp
+            .calls_to("/.well-known/oauth-authorization-server")
+            .len()
+}
+
 #[tokio::test]
 async fn while_the_provider_is_down_the_old_copy_is_served_without_asking_again_every_time() {
     let idp = Idp::start().await;
@@ -582,32 +596,145 @@ async fn while_the_provider_is_down_the_old_copy_is_served_without_asking_again_
         Duration::from_millis(50),
     );
     assert!(p.authorization_server_metadata().await.is_some());
-    idp.set(
-        "discovery",
-        Answer {
-            status: 500,
-            ..Answer::ok(json!({}))
-        },
-    );
+    idp.set("discovery", down());
     tokio::time::sleep(Duration::from_millis(120)).await;
 
     assert!(
         p.authorization_server_metadata().await.is_some(),
         "the first call after the outage tries and serves the old copy"
     );
-    let asked = idp.calls_to("/.well-known/openid-configuration").len()
-        + idp
-            .calls_to("/.well-known/oauth-authorization-server")
-            .len();
+    let asked = calls_for_metadata(&idp).await;
     for _ in 0..10 {
         assert!(p.authorization_server_metadata().await.is_some());
     }
-    let after = idp.calls_to("/.well-known/openid-configuration").len()
-        + idp
-            .calls_to("/.well-known/oauth-authorization-server")
-            .len();
     assert_eq!(
-        after, asked,
+        calls_for_metadata(&idp).await,
+        asked,
         "a failed refresh must not be retried by every request"
     );
+}
+
+#[tokio::test]
+async fn a_provider_that_was_down_from_the_start_is_not_asked_again_by_every_request() {
+    let idp = Idp::start().await;
+    idp.set("discovery", down());
+    let p = provider(&idp);
+    assert!(p.authorization_server_metadata().await.is_none());
+    let asked = calls_for_metadata(&idp).await;
+    assert!(asked > 0);
+    for _ in 0..10 {
+        assert!(p.authorization_server_metadata().await.is_none());
+    }
+    assert_eq!(calls_for_metadata(&idp).await, asked);
+}
+
+#[tokio::test]
+async fn once_the_wait_is_over_a_recovered_provider_fills_the_cache_and_replaces_an_old_copy() {
+    // empty cache, provider down at first
+    let idp = Idp::start().await;
+    let good = idp.state.discovery.lock().unwrap().clone();
+    idp.set("discovery", down());
+    let p = Provider::with_ttl(
+        &idp.issuer(),
+        client(Duration::from_secs(5)),
+        Duration::from_millis(50),
+    )
+    .with_retry_gap(Duration::from_millis(200));
+    assert!(p.authorization_server_metadata().await.is_none());
+    idp.set("discovery", good);
+    assert!(
+        p.authorization_server_metadata().await.is_none(),
+        "still inside the wait"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let first = p.authorization_server_metadata().await.expect("recovered");
+
+    // an old copy is replaced by the new document once the wait is over
+    idp.set("discovery", down());
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert_eq!(p.authorization_server_metadata().await.unwrap(), first);
+    idp.set(
+        "discovery",
+        Answer::ok(rfc8414_doc(&idp, json!({"generation": 2}))),
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        p.authorization_server_metadata().await.unwrap()["generation"],
+        2
+    );
+}
+
+#[tokio::test]
+async fn the_production_lifetimes_keep_a_copy_for_minutes_and_wait_before_retrying() {
+    // Provider::new: five minutes for a copy, thirty seconds between failed attempts
+    let idp = Idp::start().await;
+    let p = provider(&idp);
+    assert!(p.authorization_server_metadata().await.is_some());
+    idp.set("discovery", down());
+    for _ in 0..5 {
+        assert!(p.authorization_server_metadata().await.is_some());
+    }
+    assert_eq!(
+        calls_for_metadata(&idp).await,
+        2,
+        "one fetch (the RFC 8414 address fails, the OpenID one answers) and nothing more inside the lifetime"
+    );
+}
+
+#[tokio::test]
+async fn every_endpoint_address_in_the_document_is_checked_and_links_are_not() {
+    for field in [
+        "introspection_endpoint",
+        "end_session_endpoint",
+        "device_authorization_endpoint",
+        "pushed_authorization_request_endpoint",
+    ] {
+        let idp = Idp::start().await;
+        idp.set(
+            "discovery",
+            Answer::ok(rfc8414_doc(&idp, json!({field: "http://evil.example/x"}))),
+        );
+        assert!(
+            provider(&idp)
+                .authorization_server_metadata()
+                .await
+                .is_none(),
+            "{field}"
+        );
+    }
+    // addresses inside mtls_endpoint_aliases too, and a malformed one
+    for aliases in [
+        json!({"token_endpoint": "http://evil.example/t"}),
+        json!({"token_endpoint": 5}),
+        json!("not an object"),
+    ] {
+        let idp = Idp::start().await;
+        idp.set(
+            "discovery",
+            Answer::ok(rfc8414_doc(&idp, json!({"mtls_endpoint_aliases": aliases}))),
+        );
+        assert!(provider(&idp)
+            .authorization_server_metadata()
+            .await
+            .is_none());
+    }
+    // links to documentation are not endpoints; a good alias is fine
+    let idp = Idp::start().await;
+    let ok_alias = format!("{}/mtls/token", idp.issuer());
+    idp.set(
+        "discovery",
+        Answer::ok(rfc8414_doc(
+            &idp,
+            json!({
+                "scopes_supported": ["openid"],
+                "service_documentation": "http://docs.example/",
+                "op_policy_uri": "http://docs.example/policy",
+                "mtls_endpoint_aliases": {"token_endpoint": ok_alias},
+            }),
+        )),
+    );
+    assert!(provider(&idp)
+        .authorization_server_metadata()
+        .await
+        .is_some());
 }
