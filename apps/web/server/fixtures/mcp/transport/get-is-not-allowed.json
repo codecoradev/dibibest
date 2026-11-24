@@ -1,0 +1,10 @@
+{
+  "title": "GET has no server-initiated stream: 405",
+  "steps": [
+    {
+      "token": null,
+      "request": {"method": "GET"},
+      "expect": {"status": 405, "headers": {"allow": "POST, OPTIONS"}}
+    }
+  ]
+}

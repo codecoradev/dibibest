@@ -1,0 +1,28 @@
+{
+  "title": "tools/call with the Mcp-Name header",
+  "steps": [
+    {
+      "request": {
+        "headers": {"mcp-protocol-version": "2026-07-28", "mcp-method": "tools/call", "mcp-name": "list_formats"},
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "tools/call",
+          "params": {
+            "name": "list_formats",
+            "arguments": {},
+            "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
+          }
+        }
+      },
+      "expect": {
+        "status": 200,
+        "body": [
+          {"path": ["result", "isError"], "equals": false},
+          {"path": ["result", "content", 0, "text"], "contains": "sql:mysql"},
+          {"path": ["result", "resultType"], "equals": "complete"}
+        ]
+      }
+    }
+  ]
+}

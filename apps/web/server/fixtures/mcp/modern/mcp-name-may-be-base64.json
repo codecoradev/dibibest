@@ -1,0 +1,25 @@
+{
+  "title": "Mcp-Name may be base64 encoded (=?base64?...?=)",
+  "steps": [
+    {
+      "request": {
+        "headers": {
+          "mcp-protocol-version": "2026-07-28",
+          "mcp-method": "tools/call",
+          "mcp-name": "=?base64?bGlzdF9mb3JtYXRz?="
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "tools/call",
+          "params": {
+            "name": "list_formats",
+            "arguments": {},
+            "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
+          }
+        }
+      },
+      "expect": {"status": 200}
+    }
+  ]
+}

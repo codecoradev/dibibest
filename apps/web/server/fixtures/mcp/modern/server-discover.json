@@ -1,0 +1,23 @@
+{
+  "title": "server/discover opens a modern session and says what is supported",
+  "steps": [
+    {
+      "request": {
+        "headers": {"mcp-protocol-version": "2026-07-28", "mcp-method": "server/discover"},
+        "body": {"jsonrpc": "2.0", "id": 1, "method": "server/discover"}
+      },
+      "expect": {
+        "status": 200,
+        "body": [
+          {"path": ["result", "supportedVersions", 0], "equals": "2026-07-28"},
+          {"path": ["result", "supportedVersions"], "contains": "2025-06-18"},
+          {"path": ["result", "capabilities"], "equals": {"tools": {}}},
+          {"path": ["result", "resultType"], "equals": "complete"},
+          {"path": ["result", "ttlMs"], "gt": 0},
+          {"path": ["result", "cacheScope"], "equals": "public"},
+          {"path": ["result", "_meta", "io.modelcontextprotocol/serverInfo", "name"], "equals": "dibibest"}
+        ]
+      }
+    }
+  ]
+}

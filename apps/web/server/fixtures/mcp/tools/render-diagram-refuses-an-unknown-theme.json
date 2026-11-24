@@ -1,0 +1,16 @@
+{
+  "title": "an unknown theme is a tool error",
+  "steps": [
+    {
+      "request": {
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "tools/call",
+          "params": {"name": "render_diagram", "arguments": {"source": "x", "theme": "pink"}}
+        }
+      },
+      "expect": {"status": 200, "body": [{"path": ["result", "isError"], "equals": true}]}
+    }
+  ]
+}

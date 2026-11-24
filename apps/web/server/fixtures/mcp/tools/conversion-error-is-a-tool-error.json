@@ -1,0 +1,16 @@
+{
+  "title": "a conversion error is a tool error, not a transport error",
+  "steps": [
+    {
+      "request": {
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "tools/call",
+          "params": {"name": "convert_schema", "arguments": {"source": "hello", "to": "sql"}}
+        }
+      },
+      "expect": {"status": 200, "body": [{"path": ["result", "isError"], "equals": true}]}
+    }
+  ]
+}

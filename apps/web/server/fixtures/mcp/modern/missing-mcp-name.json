@@ -1,0 +1,21 @@
+{
+  "title": "tools/call without Mcp-Name: 400 and -32020",
+  "steps": [
+    {
+      "request": {
+        "headers": {"mcp-protocol-version": "2026-07-28", "mcp-method": "tools/call"},
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "tools/call",
+          "params": {
+            "name": "list_formats",
+            "arguments": {},
+            "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
+          }
+        }
+      },
+      "expect": {"status": 400, "body": [{"path": ["error", "code"], "equals": -32020}]}
+    }
+  ]
+}

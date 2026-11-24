@@ -1,0 +1,19 @@
+{
+  "title": "an unknown tool says so in plain text",
+  "steps": [
+    {
+      "request": {
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "tools/call",
+          "params": {"name": "drop_database", "arguments": {}}
+        }
+      },
+      "expect": {
+        "status": 200,
+        "body": [{"path": ["result", "content", 0, "text"], "equals": "unknown tool: drop_database"}]
+      }
+    }
+  ]
+}

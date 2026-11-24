@@ -1,0 +1,23 @@
+{
+  "title": "an unknown version: 400, -32022 and the supported list",
+  "steps": [
+    {
+      "request": {
+        "headers": {"mcp-protocol-version": "2099-01-01", "mcp-method": "tools/list"},
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "tools/list",
+          "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2099-01-01"}}
+        }
+      },
+      "expect": {
+        "status": 400,
+        "body": [
+          {"path": ["error", "code"], "equals": -32022},
+          {"path": ["error", "data", "supported", 0], "equals": "2026-07-28"}
+        ]
+      }
+    }
+  ]
+}

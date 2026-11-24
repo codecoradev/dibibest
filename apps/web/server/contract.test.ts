@@ -177,7 +177,7 @@ test('the fixtures were found and are well formed', () => {
 	// Every group must be present, so a runner that silently loads nothing (or loses a directory) fails here
 	// instead of passing with no cases. No count is hard-coded: adding a fixture needs no change in this file.
 	const groups = new Set(fixtures.map((f) => f.id.split('/')[0]));
-	for (const g of ['metadata', 'auth', 'cors', 'legacy']) {
+	for (const g of ['metadata', 'auth', 'transport', 'cors', 'legacy', 'modern', 'tools']) {
 		expect(groups.has(g), `no fixtures found in the group ${g}`).toBe(true);
 	}
 	for (const f of fixtures) {

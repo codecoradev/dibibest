@@ -1,0 +1,16 @@
+{
+  "title": "a source that is not a string is a tool error",
+  "steps": [
+    {
+      "request": {
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "tools/call",
+          "params": {"name": "convert_schema", "arguments": {"source": 1, "to": "sql"}}
+        }
+      },
+      "expect": {"status": 200, "body": [{"path": ["result", "isError"], "equals": true}]}
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "title": "a notification is accepted without a body",
+  "steps": [
+    {
+      "request": {"body": {"jsonrpc": "2.0", "method": "notifications/initialized"}},
+      "expect": {"status": 202, "bodyText": ""}
+    }
+  ]
+}
