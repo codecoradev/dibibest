@@ -1,0 +1,15 @@
+[package]
+name = "dibibest-store"
+description = "Durable project storage: an append-only op log with one order per project, and snapshots"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+rusqlite = { version = "0.43", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"
