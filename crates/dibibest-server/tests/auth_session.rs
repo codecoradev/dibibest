@@ -225,3 +225,19 @@ fn the_expiry_is_enforced_for_any_payload_type_not_only_ones_that_declare_it() {
     assert!(verify::<serde_json::Value>(SECRET, &expiring, 9).is_some());
     assert_eq!(verify::<serde_json::Value>(SECRET, &expiring, 10), None);
 }
+
+#[test]
+fn equal_texts_compare_equal_and_anything_else_does_not() {
+    use dibibest_server::auth::session::constant_time_eq;
+    assert!(constant_time_eq(b"", b""));
+    assert!(constant_time_eq(b"state-123", b"state-123"));
+    for (a, b) in [
+        (&b"state-123"[..], &b"state-124"[..]),
+        (b"state", b"state-123"),
+        (b"state-123", b"state"),
+        (b"a", b""),
+        (b"", b"a"),
+    ] {
+        assert!(!constant_time_eq(a, b), "{a:?} {b:?}");
+    }
+}
