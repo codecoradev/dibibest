@@ -424,6 +424,25 @@ fn checkpoint(conn: &Connection) {
     let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
 }
 
+type Slot = (SyncSender<Result<Reply>>, Result<Reply>, bool);
+
+/// The transaction is gone (SQLite threw it away, or a statement that guards it failed), so no job that looked
+/// fine so far was written. Answer each of them with the error; a job's own refusal stays as it is.
+fn fail_earlier(results: &mut [Slot], e: &StoreError) {
+    for (_, r, _) in results {
+        if r.is_ok() {
+            *r = Err(e.clone());
+        }
+    }
+}
+
+/// Ends the transaction if one is still open, so the next batch can start its own.
+fn abandon(conn: &Connection) {
+    if !conn.is_autocommit() {
+        let _ = conn.execute_batch("ROLLBACK");
+    }
+}
+
 /// Writes a batch in one transaction and answers every caller after the commit.
 fn run_batch(conn: &Connection, batch: Vec<Job>, shared: &Shared) {
     shared.jobs.fetch_add(batch.len() as u64, Ordering::SeqCst);
@@ -438,8 +457,7 @@ fn run_batch(conn: &Connection, batch: Vec<Job>, shared: &Shared) {
         return;
     }
     // Per job: where to answer, the answer, and whether the job writes.
-    let mut results: Vec<(SyncSender<Result<Reply>>, Result<Reply>, bool)> =
-        Vec::with_capacity(batch.len());
+    let mut results: Vec<Slot> = Vec::with_capacity(batch.len());
     // Set when SQLite threw the whole transaction away (it may, on a full disk or an I/O error).
     let mut lost: Option<StoreError> = None;
     for job in batch {
@@ -449,8 +467,10 @@ fn run_batch(conn: &Connection, batch: Vec<Job>, shared: &Shared) {
             continue;
         }
         if let Err(e) = conn.execute_batch("SAVEPOINT job") {
-            lost = Some(map_err(e));
-            results.push((job.reply, Err(lost.clone().expect("just set")), writes));
+            let e = map_err(e);
+            fail_earlier(&mut results, &e);
+            results.push((job.reply, Err(e.clone()), writes));
+            lost = Some(e);
             continue;
         }
         let r = execute(conn, job.work);
@@ -460,11 +480,7 @@ fn run_batch(conn: &Connection, batch: Vec<Job>, shared: &Shared) {
             }
             Err(e) if conn.is_autocommit() => {
                 lost = Some(e.clone());
-                for (_, earlier, _) in &mut results {
-                    if earlier.is_ok() {
-                        *earlier = Err(e.clone());
-                    }
-                }
+                fail_earlier(&mut results, e);
             }
             Err(_) => {
                 let _ = conn.execute_batch("ROLLBACK TO job; RELEASE job");
@@ -473,6 +489,9 @@ fn run_batch(conn: &Connection, batch: Vec<Job>, shared: &Shared) {
         results.push((job.reply, r, writes));
     }
     let mut committed = false;
+    if lost.is_some() {
+        abandon(conn);
+    }
     if lost.is_none() {
         match conn.execute_batch("COMMIT") {
             Ok(()) => {
@@ -481,12 +500,8 @@ fn run_batch(conn: &Connection, batch: Vec<Job>, shared: &Shared) {
             }
             Err(e) => {
                 let e = map_err(e);
-                let _ = conn.execute_batch("ROLLBACK");
-                for (_, r, _) in &mut results {
-                    if r.is_ok() {
-                        *r = Err(e.clone());
-                    }
-                }
+                abandon(conn);
+                fail_earlier(&mut results, &e);
             }
         }
     }
@@ -713,5 +728,52 @@ impl Store for SqliteStore {
             )
             .optional()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slot(r: Result<Reply>) -> (SyncSender<Result<Reply>>, Result<Reply>, bool) {
+        let (tx, _rx) = sync_channel(1);
+        (tx, r, true)
+    }
+
+    #[test]
+    fn when_the_transaction_is_lost_every_job_that_looked_fine_is_answered_with_the_error() {
+        let mut results = vec![
+            slot(Ok(Reply::Done)),
+            slot(Err(StoreError::KeyConflict("mine"))),
+            slot(Ok(Reply::Done)),
+        ];
+        fail_earlier(&mut results, &StoreError::Io("gone".into()));
+        assert_eq!(
+            results[0].1.as_ref().err(),
+            Some(&StoreError::Io("gone".into()))
+        );
+        assert_eq!(
+            results[1].1.as_ref().err(),
+            Some(&StoreError::KeyConflict("mine")),
+            "a job's own refusal is not replaced"
+        );
+        assert_eq!(
+            results[2].1.as_ref().err(),
+            Some(&StoreError::Io("gone".into()))
+        );
+    }
+
+    #[test]
+    fn an_open_transaction_is_ended_and_a_closed_one_is_left_alone() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        assert!(!conn.is_autocommit());
+        abandon(&conn);
+        assert!(
+            conn.is_autocommit(),
+            "the transaction must not be left open"
+        );
+        abandon(&conn); // nothing open: no error, no change
+        assert!(conn.is_autocommit());
     }
 }
