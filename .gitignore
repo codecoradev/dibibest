@@ -6,3 +6,4 @@ Cargo.lock.bak
 /scratch
 *.local.*
 *.db
+.env

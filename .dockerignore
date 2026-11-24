@@ -1,6 +1,42 @@
+# Keep the build context small and keep local state and secrets out of the image.
+
+# VCS and CI
 .git
+.github
+.cora
+
+# Build output and caches (the image builds its own)
 target
-fuzz/target
-fuzz/corpus
-fuzz/artifacts
-apps/web/node_modules
+fuzz
+**/node_modules
+apps/web/build
+apps/web/.svelte-kit
+apps/web/src/lib/wasm
+apps/web/test-results
+apps/web/playwright-report
+apps/web/.wrangler
+
+# The Cloudflare side of the web app and the browser tests are not needed to build the static site
+apps/web/functions
+apps/web/tests
+apps/web/wrangler.toml
+
+# Local state and secrets
+.env
+.env.*
+**/.dev.vars
+*.db
+*.db-wal
+*.db-shm
+*.local.*
+scratch
+Cargo.lock.bak
+
+# Documentation and deploy files do not go into the image
+docs
+schemas
+*.md
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+.DS_Store
