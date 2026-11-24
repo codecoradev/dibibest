@@ -146,6 +146,18 @@ fn check_body(ctx: &Ctx, body: &Value, checks: &[Value]) -> Result<(), String> {
             .collect::<Vec<_>>()
             .join(".");
         let mut value = pick(body, path).cloned();
+        const OPERATORS: [&str; 7] = [
+            "exists",
+            "equals",
+            "contains",
+            "startsWith",
+            "containsLine",
+            "gt",
+            "length",
+        ];
+        if !OPERATORS.iter().any(|op| c.get(op).is_some()) {
+            return Err(format!("body {name}: the check names no operator"));
+        }
         if let Some(want) = c.get("exists") {
             if value.is_some() != want.as_bool().unwrap() {
                 return Err(format!("body {name}: exists should be {want}"));
@@ -292,7 +304,8 @@ async fn run(case: &Case) -> Result<(), String> {
                 {
                     return Err(at(format!("header {name}: {g} lacks {}", o["contains"])));
                 }
-                _ => {}
+                (Value::String(_) | Value::Object(_), Some(_)) => {}
+                (other, _) => return Err(at(format!("header {name}: unknown check {other}"))),
             }
         }
         if let Some(t) = want.get("bodyText") {

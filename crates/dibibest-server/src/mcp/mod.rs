@@ -213,10 +213,7 @@ async fn serve(auth: &Auth, ctx: &Ctx<'_>, req: Request) -> Response {
         );
     }
     let headers = req.headers().clone();
-    let ua: String = header_text(&headers, "user-agent")
-        .chars()
-        .take(40)
-        .collect();
+    let ua = clip(header_text(&headers, "user-agent"), 40);
 
     let Some(token) = bearer(&headers) else {
         tracing::info!("mcp: 401 no bearer ua={ua}");
@@ -243,7 +240,7 @@ async fn serve(auth: &Auth, ctx: &Ctx<'_>, req: Request) -> Response {
         Ok(_) => {}
         Err(TokenError::Invalid(why)) => {
             // visible in the server log; never the token
-            tracing::warn!("mcp: token refused: {why}");
+            tracing::warn!("mcp: token refused: {}", clip(&why, 120));
             return unauthorized(ctx, true);
         }
         Err(TokenError::Unavailable(_)) => return unavailable(),
@@ -289,20 +286,37 @@ async fn serve(auth: &Auth, ctx: &Ctx<'_>, req: Request) -> Response {
         return json_response(400, rpc::error(id, -32600, "invalid request"), &[]);
     };
     tracing::info!(
-        "mcp: <- {method} ua={ua} pv={} mm={} accept={}",
-        header_text(&headers, "mcp-protocol-version"),
-        header_text(&headers, "mcp-method"),
-        header_text(&headers, "accept")
-            .chars()
-            .take(60)
-            .collect::<String>()
+        "mcp: <- {} ua={ua} pv={} mm={} accept={}",
+        clip(method, 60),
+        clip(header_text(&headers, "mcp-protocol-version"), 40),
+        clip(header_text(&headers, "mcp-method"), 60),
+        clip(header_text(&headers, "accept"), 60)
     );
 
     if rpc::is_modern(&message, method) {
         let (status, body) = rpc::modern(&headers, &message, method).await;
-        tracing::info!("mcp: {method} (modern) -> {status}");
+        tracing::info!("mcp: {} (modern) -> {status}", clip(method, 60));
         return json_response(status, body, &[]);
     }
     let reply = rpc::legacy(&message, method).await;
     json_response(200, reply, &[])
+}
+
+/// A value from the request, cut short and quoted with its control characters escaped, so that nothing a client
+/// sends can forge or split a log line.
+fn clip(text: &str, max: usize) -> String {
+    format!("{:?}", text.chars().take(max).collect::<String>())
+}
+
+#[cfg(test)]
+mod clip_tests {
+    use super::clip;
+
+    #[test]
+    fn a_logged_value_is_cut_short_and_cannot_break_the_line() {
+        assert_eq!(clip("abcdef", 3), "\"abc\"");
+        let forged = clip("x\nmcp: 200 admin logged in\r\u{1b}[31m", 100);
+        assert!(!forged.contains('\n') && !forged.contains('\r') && !forged.contains('\u{1b}'));
+        assert!(forged.starts_with('"') && forged.ends_with('"'));
+    }
 }
