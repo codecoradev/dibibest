@@ -71,3 +71,30 @@ Projects live on the server (decision of 2026-11-24: own VPS, one origin, SQLite
 Operating rules: exactly one server process per database (the room state is in memory; the lock file comes with the
 server crate, #91); keep the data directory on a local disk or a Docker **named volume**, not a Docker Desktop bind
 mount (WAL on VirtioFS lost data in another project of ours).
+
+## Server (`dibibest-server`, epic #84)
+
+One process behind one origin. It owns the data directory, the store and the socket; the web app, the API, the live
+WebSocket and the MCP endpoint are modules of it (`auth`, `mcp`, `live` are empty until their stages land, and the router
+already mounts them, so a stage adds routes without editing the composition in `app.rs`).
+
+- **Start order is the safety order:** lock the data directory, open the store, bind the address. A second process
+  stops at the lock (`dibibest.lock`, an exclusive file lock that vanishes with the process) and never touches the
+  database. Room state is in memory and the store has one writer, so two processes on one database would each order
+  the ops of a project on their own.
+- **Probes:** `/healthz` is liveness (the process answers). `/readyz` is readiness: the store answers, runs in WAL, and is
+  not read-only because of a full disk. Neither is rate limited.
+- **Web app:** served from a directory (`DIBIBEST_WEB_DIR`), not embedded. Embedding would make `cargo build` wait for a
+  web build and the WASM toolchain; the Docker image copies the build next to the binary, so it is still one container.
+  A route of the app (`/p/<id>`) gets `index.html`; a missing file with an extension is a 404; `/v1`, `/auth`, `/mcp` and
+  `/.well-known` answer a JSON 404, never the app. Hashed output under `/_app/immutable/` is cached for a year, the rest
+  is revalidated. A path cannot leave the directory (`..`, backslash, NUL, symlinks that resolve outside).
+- **Limits in front of everything:** a token bucket per client address (429 with `Retry-After`) and a request body limit
+  (413). Behind a reverse proxy set `DIBIBEST_TRUST_PROXY=true`: the client is then the **last** `X-Forwarded-For` entry,
+  the one the proxy appended. Entries before it are written by the client and are ignored. Without that setting the
+  header is ignored altogether.
+- **Shutdown** (SIGTERM or Ctrl-C): stop taking connections, wait up to `DIBIBEST_SHUTDOWN_GRACE_SECS` for requests in
+  flight, let the store flush its writer, release the lock, exit 0.
+- **Configuration** is environment only: `DIBIBEST_ADDR` (default `127.0.0.1:8080`), `DIBIBEST_DATA_DIR`,
+  `DIBIBEST_WEB_DIR`, `DIBIBEST_TRUST_PROXY`, `DIBIBEST_RATE_PER_MINUTE`, `DIBIBEST_MAX_BODY_BYTES`,
+  `DIBIBEST_SHUTDOWN_GRACE_SECS`. A blank value counts as unset; a bad value stops the start and names the variable.
