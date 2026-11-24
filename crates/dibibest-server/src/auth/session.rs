@@ -65,7 +65,7 @@ pub fn pkce_challenge(verifier: &str) -> String {
 /// Only same-site relative paths (the open-redirect guard). Control characters and backslashes are refused
 /// outright: browsers strip tab, CR and LF and read a backslash as a slash when they parse a `Location`
 /// (`/\t/evil` becomes `//evil`). What is left is resolved against a placeholder origin, which also normalises it
-/// (`/a/../app` is `/app`), and has to stay on that origin.
+/// (`/a/../app` is `/app`), has to stay on that origin, and must not come out protocol-relative.
 pub fn safe_return_to(value: Option<&str>) -> String {
     let fallback = || DEFAULT_RETURN_TO.to_string();
     let Some(v) = value else { return fallback() };
@@ -82,6 +82,11 @@ pub fn safe_return_to(value: Option<&str>) -> String {
     match base.join(v) {
         Ok(u) if u.origin() == base.origin() => {
             let mut out = u.path().to_string();
+            // Normalising can create what the input did not have: `..` is dropped at the root, so `/..//evil.test`
+            // becomes the path `//evil.test`, which a browser follows to another site. Check the result too.
+            if out.starts_with("//") {
+                return fallback();
+            }
             if let Some(q) = u.query() {
                 out.push('?');
                 out.push_str(q);

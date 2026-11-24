@@ -139,6 +139,22 @@ fn return_to_only_accepts_same_site_paths() {
     ] {
         assert_eq!(safe_return_to(Some(bad)), app, "{bad:?}");
     }
+    // dot segments that normalise into a protocol-relative path: `/..//evil.test` does not start with two
+    // slashes, but once `..` is dropped at the root the path IS `//evil.test`, which a browser follows off-site
+    for bad in [
+        "/..//evil.test",
+        "/a/..//evil.test",
+        "/.//evil.test",
+        "/../..//evil.test",
+        "/%2e%2e//evil.test",
+        "/%2E%2E//evil.test",
+        "/a/%2e%2e//evil.test",
+        "/..//evil.test?x=1#y",
+    ] {
+        assert_eq!(safe_return_to(Some(bad)), app, "{bad:?}");
+    }
+    // a path that merely contains a double slash further in stays on this site and is kept
+    assert_eq!(safe_return_to(Some("/p//x")), "/p//x");
     // what /auth/login receives for ?return_to=/%09/evil.test, once the query is decoded
     assert_eq!(safe_return_to(Some("/\t/evil.test")), app);
     // ordinary paths survive, normalised
