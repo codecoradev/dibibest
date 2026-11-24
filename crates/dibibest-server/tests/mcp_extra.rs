@@ -135,6 +135,22 @@ async fn a_token_for_a_resource_on_another_host_is_refused() {
         )
         .await;
     assert_eq!(res.status(), 401);
+    assert!(
+        header(&res, "www-authenticate").contains("error=\"invalid_token\""),
+        "refused for its audience, not for something else"
+    );
+
+    // control: the same request with a token for this server's own address is let through, whatever Host says
+    let ok = w
+        .post(
+            "{}".into(),
+            &[
+                ("authorization", format!("Bearer {}", w.token())),
+                ("host", "evil.example".into()),
+            ],
+        )
+        .await;
+    assert_ne!(ok.status(), 401);
 }
 
 #[tokio::test]
@@ -362,7 +378,10 @@ async fn a_provider_with_no_usable_metadata_is_a_502() {
     let idp = Idp::start().await;
     idp.set(
         "discovery",
-        Answer::ok(json!({"issuer": 5, "authorization_endpoint": "x"})),
+        Answer::ok(json!({
+            "issuer": 5,
+            "authorization_endpoint": format!("{}/oauth2/authorize", idp.issuer())
+        })),
     );
     let p = Provider::new(&idp.issuer(), client(Duration::from_secs(5)));
     assert!(
