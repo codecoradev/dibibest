@@ -179,7 +179,7 @@ struct Call {
 impl Call {
     fn log(&self, status: StatusCode) {
         let shown = |v: &Option<String>| v.clone().unwrap_or_else(|| "-".to_string());
-        tracing::info!(
+        let line = format!(
             "mcp: status={} method={} ua={} pv={} reason={}",
             status.as_u16(),
             shown(&self.method),
@@ -187,6 +187,12 @@ impl Call {
             shown(&self.protocol_version),
             shown(&self.reason)
         );
+        // a refusal stands out from the normal traffic
+        if status.as_u16() >= 400 {
+            tracing::warn!("{line}");
+        } else {
+            tracing::info!("{line}");
+        }
     }
 
     /// Records why a call was refused and passes the response on.
@@ -315,6 +321,10 @@ async fn serve(auth: &Auth, ctx: &Ctx<'_>, req: Request, call: &mut Call) -> Res
     if !message.is_object() || message.get("jsonrpc") != Some(&json!("2.0")) {
         return bad(call, -32600, "invalid request");
     }
+    call.method = message
+        .get("method")
+        .and_then(Value::as_str)
+        .map(|m| clip(m, 60));
     // a notification (no id) or a client response (no method) gets no body
     let (Some(method), Some(id)) = (message.get("method"), message.get("id")) else {
         return StatusCode::ACCEPTED.into_response();
@@ -323,7 +333,6 @@ async fn serve(auth: &Auth, ctx: &Ctx<'_>, req: Request, call: &mut Call) -> Res
         let res = json_response(400, rpc::error(id, -32600, "invalid request"), &[]);
         return call.refused("invalid request", res);
     };
-    call.method = Some(clip(method, 60));
 
     if rpc::is_modern(&message, method) {
         let (status, body) = rpc::modern(&headers, &message, method).await;

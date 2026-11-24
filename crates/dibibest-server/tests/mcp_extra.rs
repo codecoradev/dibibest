@@ -661,3 +661,32 @@ async fn a_modern_refusal_logs_its_reason() {
     );
     assert!(!lines[0].contains("reason=-"), "{}", lines[0]);
 }
+
+#[tokio::test]
+async fn a_notification_logs_its_method_and_a_refusal_is_a_warning() {
+    let w = world().await;
+    let (buf, _guard) = capture_log();
+    let res = w
+        .post(
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string(),
+            &[("authorization", format!("Bearer {}", w.token()))],
+        )
+        .await;
+    assert_eq!(res.status(), 202);
+    w.post("{}".into(), &[]).await; // no token: refused
+    let log = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    let mine: Vec<&str> = log.lines().filter(|l| l.contains("mcp: status=")).collect();
+    assert_eq!(mine.len(), 2, "{log}");
+    assert!(
+        mine[0].contains("INFO")
+            && mine[0].contains("status=202")
+            && mine[0].contains("method=\"notifications/initialized\""),
+        "{}",
+        mine[0]
+    );
+    assert!(
+        mine[1].contains("WARN") && mine[1].contains("status=401"),
+        "{}",
+        mine[1]
+    );
+}
