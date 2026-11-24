@@ -23,6 +23,7 @@ pub struct AppState {
     pub limiter: Arc<RateLimiter>,
     pub trusted_proxies: usize,
     pub max_body_bytes: usize,
+    pub auth: Arc<crate::auth::Auth>,
 }
 
 impl AppState {
@@ -33,6 +34,7 @@ impl AppState {
             limiter: Arc::new(RateLimiter::new(config.rate_per_minute)),
             trusted_proxies: config.trusted_proxies,
             max_body_bytes: config.max_body_bytes,
+            auth: Arc::new(crate::auth::Auth::new(config)),
         }
     }
 }

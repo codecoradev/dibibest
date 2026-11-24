@@ -7,6 +7,59 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
+use url::{Host, Url};
+
+/// How the client proves itself at the token endpoint (`DIBIBEST_OIDC_TOKEN_AUTH`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenAuth {
+    /// HTTP Basic with the form-encoded id and secret, RFC 6749 section 2.3.1. The default.
+    Basic,
+    /// `client_id` and `client_secret` in the request body.
+    Post,
+}
+
+/// Sign-in through an OpenID Connect provider (Gatehouse). Present only when every setting is.
+#[derive(Clone)]
+pub struct Oidc {
+    /// `DIBIBEST_OIDC_ISSUER`, without a trailing slash.
+    pub issuer: String,
+    /// `DIBIBEST_OIDC_CLIENT_ID`.
+    pub client_id: String,
+    /// `DIBIBEST_OIDC_CLIENT_SECRET`.
+    pub client_secret: String,
+    /// `DIBIBEST_SESSION_SECRET`: signs the login handshake and the session cookie. At least 32 characters.
+    pub session_secret: String,
+    /// `DIBIBEST_OIDC_TOKEN_AUTH`.
+    pub token_auth: TokenAuth,
+}
+
+// The secrets are left out of the debug output: a config that is logged must not leak them.
+impl std::fmt::Debug for Oidc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Oidc")
+            .field("issuer", &self.issuer)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"[redacted]")
+            .field("session_secret", &"[redacted]")
+            .field("token_auth", &self.token_auth)
+            .finish()
+    }
+}
+
+/// Whether the server may talk to `url`, or hand a person's browser to it: HTTPS, or plain HTTP to this machine
+/// (for development and tests), and no credentials in the address. A provider that points the token endpoint at
+/// `http://elsewhere` must not make the server send the client secret there.
+pub fn allowed_url(url: &Url) -> bool {
+    let loopback = match url.host() {
+        Some(Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(Host::Ipv6(ip)) => ip.is_loopback(),
+        None => return false,
+    };
+    (url.scheme() == "https" || (url.scheme() == "http" && loopback))
+        && url.username().is_empty()
+        && url.password().is_none()
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -26,6 +79,12 @@ pub struct Config {
     pub max_body_bytes: usize,
     /// `DIBIBEST_SHUTDOWN_GRACE_SECS`: how long a shutdown waits for requests in flight.
     pub shutdown_grace: Duration,
+    /// `DIBIBEST_PUBLIC_URL`: the origin people use to reach the server, such as `https://dibibest.codecora.dev`.
+    /// The redirect address registered with the provider, the `Secure` flag of cookies and the same-origin check
+    /// all come from it, never from the `Host` header, which a client can write. Needed when sign-in is on.
+    pub public_url: Option<String>,
+    /// Sign-in, or `None` when it is not configured.
+    pub oidc: Option<Oidc>,
 }
 
 impl Default for Config {
@@ -38,6 +97,8 @@ impl Default for Config {
             rate_per_minute: 600,
             max_body_bytes: 1024 * 1024,
             shutdown_grace: Duration::from_secs(20),
+            public_url: None,
+            oidc: None,
         }
     }
 }
@@ -58,6 +119,13 @@ impl Config {
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
         let d = Self::default();
         let value = |var: &'static str| get(var).filter(|v| !v.trim().is_empty());
+        // A value that is only a placeholder (`...`, `xxx`, `changeme`, `todo`) counts as not set, so a copied
+        // example file does not switch sign-in on with a fake secret.
+        let real = |var: &'static str| {
+            value(var)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !is_placeholder(v))
+        };
         let parsed = |var: &'static str| -> Result<Option<_>, ConfigError> {
             value(var)
                 .map(|v| {
@@ -97,6 +165,16 @@ impl Config {
                 });
             }
         };
+        let public_url = real("DIBIBEST_PUBLIC_URL")
+            .map(|v| parse_public_url(&v))
+            .transpose()?;
+        let oidc = parse_oidc(&real)?;
+        if oidc.is_some() && public_url.is_none() {
+            return Err(ConfigError {
+                var: "DIBIBEST_PUBLIC_URL",
+                reason: "needed when sign-in is configured: the redirect address and the cookies depend on it".into(),
+            });
+        }
         let to_u32 = |var: &'static str, n: u64| {
             u32::try_from(n).map_err(|_| ConfigError {
                 var,
@@ -124,6 +202,94 @@ impl Config {
             },
             shutdown_grace: number("DIBIBEST_SHUTDOWN_GRACE_SECS")?
                 .map_or(d.shutdown_grace, Duration::from_secs),
+            public_url,
+            oidc,
         })
     }
+}
+
+fn is_placeholder(v: &str) -> bool {
+    let lower = v.to_ascii_lowercase();
+    lower == "..." || lower == "changeme" || lower == "todo" || lower.chars().all(|c| c == 'x')
+}
+
+/// `https://host[:port]` with nothing after it, as an origin without a trailing slash.
+fn parse_public_url(v: &str) -> Result<String, ConfigError> {
+    const VAR: &str = "DIBIBEST_PUBLIC_URL";
+    let fail = |reason: &str| ConfigError {
+        var: VAR,
+        reason: reason.into(),
+    };
+    let url = Url::parse(v).map_err(|e| fail(&format!("not an address: {e}")))?;
+    if !allowed_url(&url) {
+        return Err(fail(
+            "must be https (http is allowed only for localhost) and carry no credentials",
+        ));
+    }
+    if (url.path() != "/" && !url.path().is_empty())
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(fail("must be an origin, such as https://dibibest.codecora.dev, with no path, query or fragment"));
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
+/// Sign-in, from its four required settings and one optional one: all four, or none. A half is a mistake worth
+/// stopping for, not a reason to quietly leave sign-in off.
+fn parse_oidc(real: &dyn Fn(&'static str) -> Option<String>) -> Result<Option<Oidc>, ConfigError> {
+    const ISSUER: &str = "DIBIBEST_OIDC_ISSUER";
+    const SESSION: &str = "DIBIBEST_SESSION_SECRET";
+    let required = [
+        ISSUER,
+        "DIBIBEST_OIDC_CLIENT_ID",
+        "DIBIBEST_OIDC_CLIENT_SECRET",
+        SESSION,
+    ];
+    let values: Vec<Option<String>> = required.iter().map(|v| real(v)).collect();
+    if values.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    for (var, v) in required.iter().zip(&values) {
+        if v.is_none() {
+            return Err(ConfigError {
+                var,
+                reason: "sign-in is configured only in part: set the issuer, the client id, the client secret and the session secret, or none of them".into(),
+            });
+        }
+    }
+    let [issuer, client_id, client_secret, session_secret] =
+        <[String; 4]>::try_from(values.into_iter().flatten().collect::<Vec<_>>())
+            .expect("four values were checked");
+    let bad_issuer = |reason: &str| ConfigError {
+        var: ISSUER,
+        reason: reason.into(),
+    };
+    let url = Url::parse(&issuer).map_err(|e| bad_issuer(&format!("not an address: {e}")))?;
+    if !allowed_url(&url) || url.query().is_some() || url.fragment().is_some() {
+        return Err(bad_issuer("must be an https address (http is allowed only for localhost) with no credentials, query or fragment"));
+    }
+    if session_secret.len() < 32 {
+        return Err(ConfigError {
+            var: SESSION,
+            reason: "must be at least 32 characters, for example the output of `openssl rand -base64 32`".into(),
+        });
+    }
+    let token_auth = match real("DIBIBEST_OIDC_TOKEN_AUTH").as_deref() {
+        None | Some("basic") => TokenAuth::Basic,
+        Some("post") => TokenAuth::Post,
+        Some(other) => {
+            return Err(ConfigError {
+                var: "DIBIBEST_OIDC_TOKEN_AUTH",
+                reason: format!("`{other}` is not basic or post"),
+            });
+        }
+    };
+    Ok(Some(Oidc {
+        issuer: issuer.trim_end_matches('/').to_string(),
+        client_id,
+        client_secret,
+        session_secret,
+        token_auth,
+    }))
 }

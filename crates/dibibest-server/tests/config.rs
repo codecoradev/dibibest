@@ -66,3 +66,181 @@ fn a_bad_value_is_an_error_that_names_the_variable() {
         assert!(err.contains(var), "{var}={bad} gave: {err}");
     }
 }
+
+// ── sign-in (issue #93) ────────────────────────────────────────────────────────────────────────────────
+
+use dibibest_server::config::TokenAuth;
+
+const SECRET: &str = "0123456789abcdef0123456789abcdef-session";
+
+fn signin(extra: &[(&str, &str)]) -> Result<Config, dibibest_server::config::ConfigError> {
+    let mut pairs = vec![
+        ("DIBIBEST_PUBLIC_URL", "https://dibibest.codecora.dev"),
+        ("DIBIBEST_OIDC_ISSUER", "https://identity.example/api/auth/"),
+        ("DIBIBEST_OIDC_CLIENT_ID", "dibibest-web"),
+        ("DIBIBEST_OIDC_CLIENT_SECRET", "s3cret"),
+        ("DIBIBEST_SESSION_SECRET", SECRET),
+    ];
+    for (k, v) in extra {
+        pairs.retain(|(name, _)| name != k);
+        pairs.push((k, v));
+    }
+    lookup(&pairs)
+}
+
+#[test]
+fn sign_in_is_off_when_nothing_about_it_is_set() {
+    let c = lookup(&[]).unwrap();
+    assert!(c.oidc.is_none());
+    assert!(c.public_url.is_none());
+}
+
+#[test]
+fn sign_in_is_on_when_everything_is_set() {
+    let c = signin(&[]).unwrap();
+    let o = c.oidc.expect("sign-in is configured");
+    assert_eq!(
+        o.issuer, "https://identity.example/api/auth",
+        "a trailing slash is dropped"
+    );
+    assert_eq!(o.client_id, "dibibest-web");
+    assert_eq!(o.client_secret, "s3cret");
+    assert_eq!(o.session_secret, SECRET);
+    assert_eq!(
+        o.token_auth,
+        TokenAuth::Basic,
+        "RFC 6749 basic is the default"
+    );
+    assert_eq!(
+        c.public_url.as_deref(),
+        Some("https://dibibest.codecora.dev")
+    );
+}
+
+#[test]
+fn a_half_configured_sign_in_is_an_error_that_names_what_is_missing() {
+    for missing in [
+        "DIBIBEST_OIDC_ISSUER",
+        "DIBIBEST_OIDC_CLIENT_ID",
+        "DIBIBEST_OIDC_CLIENT_SECRET",
+        "DIBIBEST_SESSION_SECRET",
+    ] {
+        let err = signin(&[(missing, "")]).unwrap_err().to_string();
+        assert!(err.contains(missing), "{missing}: {err}");
+    }
+}
+
+#[test]
+fn placeholders_count_as_not_set() {
+    for placeholder in ["...", "xxxx", "changeme", "TODO", "  "] {
+        let all = [
+            ("DIBIBEST_OIDC_ISSUER", placeholder),
+            ("DIBIBEST_OIDC_CLIENT_ID", placeholder),
+            ("DIBIBEST_OIDC_CLIENT_SECRET", placeholder),
+            ("DIBIBEST_SESSION_SECRET", placeholder),
+        ];
+        assert!(lookup(&all).unwrap().oidc.is_none(), "{placeholder:?}");
+    }
+}
+
+#[test]
+fn a_session_secret_that_is_too_short_is_refused() {
+    let err = signin(&[("DIBIBEST_SESSION_SECRET", "too-short")])
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("DIBIBEST_SESSION_SECRET") && err.contains("32"),
+        "{err}"
+    );
+}
+
+#[test]
+fn the_provider_must_be_https_except_on_this_machine() {
+    for bad in [
+        "http://identity.example/api/auth",
+        "ftp://identity.example",
+        "identity.example",
+        "https://",
+        "https://u:p@identity.example",
+    ] {
+        let err = signin(&[("DIBIBEST_OIDC_ISSUER", bad)])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("DIBIBEST_OIDC_ISSUER"), "{bad}: {err}");
+    }
+    for ok in [
+        "http://127.0.0.1:9000/api/auth",
+        "http://localhost:9000",
+        "http://[::1]:9000/x",
+        "https://identity.example",
+    ] {
+        assert!(signin(&[("DIBIBEST_OIDC_ISSUER", ok)]).is_ok(), "{ok}");
+    }
+}
+
+#[test]
+fn the_public_address_is_an_origin_and_is_needed_for_sign_in() {
+    let err = signin(&[("DIBIBEST_PUBLIC_URL", "")])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("DIBIBEST_PUBLIC_URL"), "{err}");
+    for bad in [
+        "https://dibibest.codecora.dev/app",
+        "https://dibibest.codecora.dev/?x=1",
+        "https://dibibest.codecora.dev/#f",
+        "http://dibibest.codecora.dev",
+        "dibibest.codecora.dev",
+        "https://u:p@dibibest.codecora.dev",
+    ] {
+        let err = signin(&[("DIBIBEST_PUBLIC_URL", bad)])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("DIBIBEST_PUBLIC_URL"), "{bad}: {err}");
+    }
+    let c = signin(&[("DIBIBEST_PUBLIC_URL", "https://dibibest.codecora.dev/")]).unwrap();
+    assert_eq!(
+        c.public_url.as_deref(),
+        Some("https://dibibest.codecora.dev"),
+        "a trailing slash is dropped"
+    );
+    let c = signin(&[("DIBIBEST_PUBLIC_URL", "http://localhost:8080")]).unwrap();
+    assert_eq!(c.public_url.as_deref(), Some("http://localhost:8080"));
+    // the public address alone, with sign-in off, is fine: the MCP endpoint needs it later
+    assert_eq!(
+        lookup(&[("DIBIBEST_PUBLIC_URL", "https://dibibest.codecora.dev")])
+            .unwrap()
+            .public_url
+            .as_deref(),
+        Some("https://dibibest.codecora.dev")
+    );
+}
+
+#[test]
+fn the_token_endpoint_login_style_is_basic_or_post() {
+    assert_eq!(
+        signin(&[("DIBIBEST_OIDC_TOKEN_AUTH", "post")])
+            .unwrap()
+            .oidc
+            .unwrap()
+            .token_auth,
+        TokenAuth::Post
+    );
+    assert_eq!(
+        signin(&[("DIBIBEST_OIDC_TOKEN_AUTH", "basic")])
+            .unwrap()
+            .oidc
+            .unwrap()
+            .token_auth,
+        TokenAuth::Basic
+    );
+    let err = signin(&[("DIBIBEST_OIDC_TOKEN_AUTH", "digest")])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("DIBIBEST_OIDC_TOKEN_AUTH"), "{err}");
+}
+
+#[test]
+fn a_secret_never_shows_up_in_the_debug_output_of_the_config() {
+    let text = format!("{:?}", signin(&[]).unwrap());
+    assert!(!text.contains("s3cret") && !text.contains(SECRET), "{text}");
+}
