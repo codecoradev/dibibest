@@ -394,3 +394,24 @@ fn a_job_that_fails_halfway_leaves_no_trace_and_does_not_burn_a_number() {
         .collect();
     assert_eq!(keys, ["k1", "k3"]);
 }
+
+#[test]
+fn a_status_probe_does_not_clear_the_read_only_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let opts = Options {
+        max_page_count: Some(64),
+        ..Options::default()
+    };
+    let store = SqliteStore::open_with(dir.path().join("s.db"), opts).unwrap();
+    store.create_project("a", 1).unwrap();
+    let big = "x".repeat(50_000);
+    for i in 0..1000 {
+        if store.append("a", op(&format!("k{i}"), "u", &big)) == Err(StoreError::Full) {
+            break;
+        }
+    }
+    assert!(store.read_only(), "the disk is full");
+    // A health check asks the writer a question; that is not a write and must not say the disk has room again.
+    store.pragmas().unwrap();
+    assert!(store.read_only(), "a probe cleared the flag");
+}

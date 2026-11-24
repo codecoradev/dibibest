@@ -140,6 +140,14 @@ enum Work {
     },
 }
 
+impl Work {
+    /// Whether the job changes the database. A status question or a pause must not count as proof that the
+    /// disk has room again.
+    fn is_write(&self) -> bool {
+        !matches!(self, Work::Pragmas | Work::Pause { .. })
+    }
+}
+
 enum Reply {
     Done,
     Appended(Appended),
@@ -429,18 +437,20 @@ fn run_batch(conn: &Connection, batch: Vec<Job>, shared: &Shared) {
         }
         return;
     }
-    let mut results: Vec<(SyncSender<Result<Reply>>, Result<Reply>)> =
+    // Per job: where to answer, the answer, and whether the job writes.
+    let mut results: Vec<(SyncSender<Result<Reply>>, Result<Reply>, bool)> =
         Vec::with_capacity(batch.len());
     // Set when SQLite threw the whole transaction away (it may, on a full disk or an I/O error).
     let mut lost: Option<StoreError> = None;
     for job in batch {
+        let writes = job.work.is_write();
         if let Some(e) = &lost {
-            results.push((job.reply, Err(e.clone())));
+            results.push((job.reply, Err(e.clone()), writes));
             continue;
         }
         if let Err(e) = conn.execute_batch("SAVEPOINT job") {
             lost = Some(map_err(e));
-            results.push((job.reply, Err(lost.clone().expect("just set"))));
+            results.push((job.reply, Err(lost.clone().expect("just set")), writes));
             continue;
         }
         let r = execute(conn, job.work);
@@ -450,7 +460,7 @@ fn run_batch(conn: &Connection, batch: Vec<Job>, shared: &Shared) {
             }
             Err(e) if conn.is_autocommit() => {
                 lost = Some(e.clone());
-                for (_, earlier) in &mut results {
+                for (_, earlier, _) in &mut results {
                     if earlier.is_ok() {
                         *earlier = Err(e.clone());
                     }
@@ -460,7 +470,7 @@ fn run_batch(conn: &Connection, batch: Vec<Job>, shared: &Shared) {
                 let _ = conn.execute_batch("ROLLBACK TO job; RELEASE job");
             }
         }
-        results.push((job.reply, r));
+        results.push((job.reply, r, writes));
     }
     let mut committed = false;
     if lost.is_none() {
@@ -472,7 +482,7 @@ fn run_batch(conn: &Connection, batch: Vec<Job>, shared: &Shared) {
             Err(e) => {
                 let e = map_err(e);
                 let _ = conn.execute_batch("ROLLBACK");
-                for (_, r) in &mut results {
+                for (_, r, _) in &mut results {
                     if r.is_ok() {
                         *r = Err(e.clone());
                     }
@@ -482,13 +492,13 @@ fn run_batch(conn: &Connection, batch: Vec<Job>, shared: &Shared) {
     }
     let full = results
         .iter()
-        .any(|(_, r)| matches!(r, Err(StoreError::Full)));
+        .any(|(_, r, _)| matches!(r, Err(StoreError::Full)));
     if full {
         shared.read_only.store(true, Ordering::SeqCst);
-    } else if committed && results.iter().any(|(_, r)| r.is_ok()) {
+    } else if committed && results.iter().any(|(_, r, wrote)| *wrote && r.is_ok()) {
         shared.read_only.store(false, Ordering::SeqCst);
     }
-    for (reply, r) in results {
+    for (reply, r, _) in results {
         let _ = reply.send(r);
     }
 }
