@@ -1,0 +1,32 @@
+{
+  "note": "RS256 and PS256 vectors made once by gen-jwt-vectors.py with throwaway 2048-bit keys; only public data is kept. Tokens expire in 2100, so tests pass their own clock (now).",
+  "now": 1795000000,
+  "issuer": "https://idp.test/api/auth",
+  "audience": "https://app.test/mcp",
+  "jwks": {
+    "keys": [
+      {
+        "kty": "RSA",
+        "kid": "rsa1",
+        "alg": "RS256",
+        "use": "sig",
+        "n": "0LplvEjjdpcZVuBE_J9C2fSnydio3WIM1op9MAMdm2cNXrIpIFQMbkAoFVWut4p7weKZjxUqd02M11VoaVjl0hdMkR72Ybb2WBGFwLRIQwqSHdccGom0JdxRnb4tXk2FV9A17SKwgE2Xfy22AC60vhQu9Rr8mJ3WLmuTF1gvbOmXDg-w0BiK7wrwsQj9xrOpUVmQDg_TUW-xAAYrnBx_t9NZ_KHed0D_xKI5nCIU7aEekPIur0wJTaIeU7zr-bX_oFcLolojjnO-zEPu4J9sqTSHeiFg91xKL_UMzsDN0mxFpGha92CdKqE5pLl5bCJLOQF-1MDR9RUGUSAov9Zzmw",
+        "e": "AQAB"
+      },
+      {
+        "kty": "RSA",
+        "kid": "rsa1",
+        "alg": "PS256",
+        "use": "sig",
+        "n": "0LplvEjjdpcZVuBE_J9C2fSnydio3WIM1op9MAMdm2cNXrIpIFQMbkAoFVWut4p7weKZjxUqd02M11VoaVjl0hdMkR72Ybb2WBGFwLRIQwqSHdccGom0JdxRnb4tXk2FV9A17SKwgE2Xfy22AC60vhQu9Rr8mJ3WLmuTF1gvbOmXDg-w0BiK7wrwsQj9xrOpUVmQDg_TUW-xAAYrnBx_t9NZ_KHed0D_xKI5nCIU7aEekPIur0wJTaIeU7zr-bX_oFcLolojjnO-zEPu4J9sqTSHeiFg91xKL_UMzsDN0mxFpGha92CdKqE5pLl5bCJLOQF-1MDR9RUGUSAov9Zzmw",
+        "e": "AQAB"
+      }
+    ]
+  },
+  "tokens": {
+    "rs256": "eyJhbGciOiJSUzI1NiIsInR5cCI6ImF0K2p3dCIsImtpZCI6InJzYTEifQ.eyJpc3MiOiJodHRwczovL2lkcC50ZXN0L2FwaS9hdXRoIiwic3ViIjoidTEiLCJhdWQiOlsiaHR0cHM6Ly9hcHAudGVzdC9tY3AiLCJodHRwczovL2lkcC50ZXN0L2FwaS9hdXRoL29hdXRoMi91c2VyaW5mbyJdLCJleHAiOjQxMDI0NDQ4MDAsImlhdCI6MTcwMDAwMDAwMH0.IrumNTY0S4XJ754-EEsmIl43JnwqMveArbEn_iRbI-SyK7FAANqSfGu-FPGg9UsRIge0jv0xJHWDR0ZUu8Fpi5Dfp-5f-7GXFVLWeJoaqH3GonyMPetoriM0nISjWCyxyH77N20iuipOGX_2pn8Z9yL54HTg33fMJfDnseTTCi0cJAX0mx7bQ89fOCDl_dzeq8CZJZVUwGBytdGhxVoNM09TvGzkeCHvhYr_47oM57D9POuXEoxZItCts0W_YZLtyh1C5EgcVv5WotXPTcTIUc9-rcr9nRbqvTDkr_9woYaToSyaa-25zjWG9C6I3NZFC6hPeXNH37jOyyDNxUtB7Q",
+    "ps256": "eyJhbGciOiJQUzI1NiIsInR5cCI6ImF0K2p3dCIsImtpZCI6InJzYTEifQ.eyJpc3MiOiJodHRwczovL2lkcC50ZXN0L2FwaS9hdXRoIiwic3ViIjoidTEiLCJhdWQiOlsiaHR0cHM6Ly9hcHAudGVzdC9tY3AiLCJodHRwczovL2lkcC50ZXN0L2FwaS9hdXRoL29hdXRoMi91c2VyaW5mbyJdLCJleHAiOjQxMDI0NDQ4MDAsImlhdCI6MTcwMDAwMDAwMH0.sVX_f6S9UsD2L6v81ugSefpt65qrazws4tXlaElQ0C1PAjRDzvy_fY8pv1oTbsuuXIvI02gN6ApEPBJrpkmoBEsxpiki8QSgx1CzHguG_to9H9duhDBwNKQkUak1QTSpt-fVemNWeHbCZbWh4uYBZ6FFJWI4YLA_aiq__WQIkTI26MG3fhZYH-HW2cO231V4JlZm68znDQv5xiSu2hqlLoC1qZxEXdKyEYBrL4zvqkpyZXvWgVrLjJK_YMgg2N0SAoQqd7DP9dvTRMa0Lggl1TzK6zjqZQGA_xsMjLcVZHtuNtReGHkq9YfMX_k0yWGG3V-XAs3jaEhTG8TGCmPdvQ",
+    "rs256_tampered_payload": "eyJhbGciOiJSUzI1NiIsInR5cCI6ImF0K2p3dCIsImtpZCI6InJzYTEifQ.eyJpc3MiOiJodHRwczovL2lkcC50ZXN0L2FwaS9hdXRoIiwic3ViIjoiYWRtaW4iLCJhdWQiOlsiaHR0cHM6Ly9hcHAudGVzdC9tY3AiLCJodHRwczovL2lkcC50ZXN0L2FwaS9hdXRoL29hdXRoMi91c2VyaW5mbyJdLCJleHAiOjQxMDI0NDQ4MDAsImlhdCI6MTcwMDAwMDAwMH0.IrumNTY0S4XJ754-EEsmIl43JnwqMveArbEn_iRbI-SyK7FAANqSfGu-FPGg9UsRIge0jv0xJHWDR0ZUu8Fpi5Dfp-5f-7GXFVLWeJoaqH3GonyMPetoriM0nISjWCyxyH77N20iuipOGX_2pn8Z9yL54HTg33fMJfDnseTTCi0cJAX0mx7bQ89fOCDl_dzeq8CZJZVUwGBytdGhxVoNM09TvGzkeCHvhYr_47oM57D9POuXEoxZItCts0W_YZLtyh1C5EgcVv5WotXPTcTIUc9-rcr9nRbqvTDkr_9woYaToSyaa-25zjWG9C6I3NZFC6hPeXNH37jOyyDNxUtB7Q",
+    "rs256_other_key": "eyJhbGciOiJSUzI1NiIsInR5cCI6ImF0K2p3dCIsImtpZCI6InJzYTEifQ.eyJpc3MiOiJodHRwczovL2lkcC50ZXN0L2FwaS9hdXRoIiwic3ViIjoidTEiLCJhdWQiOlsiaHR0cHM6Ly9hcHAudGVzdC9tY3AiLCJodHRwczovL2lkcC50ZXN0L2FwaS9hdXRoL29hdXRoMi91c2VyaW5mbyJdLCJleHAiOjQxMDI0NDQ4MDAsImlhdCI6MTcwMDAwMDAwMH0.gCV17O5j6epLQyuWNFCNY7k7y1MbkmbGlZEXN1xEIzhphlvVnE4luiE1TzeE1NAO_aP6TguAOjLI3DNZGA03NiG48XRkQhGbA1OBTK2ukH9F6kPAJp8hS6FK-DGBcGETVkOQYICRREUKT-F1Z6z1M9fiUcRZsDS9QB3PAJhGsKrZMnCe2Va-spN2v8kfTLUMgML-KkATV41s-0MLXaIvlp0qjYg80Tncur-EnQs4turZ1Qs6fJVcXLPNVDS5qv6Q_FPMKkA8j8ZoMYbgz3ENc2H_6PG38wdc4dUFfGNtiXeUHk2HCaFr_nYC394omET79gL3K0criSRbq0MXgpRE9g"
+  }
+}
