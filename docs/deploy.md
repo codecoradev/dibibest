@@ -123,6 +123,24 @@ about 15 to 20 seconds after the start (interval 15 s, start period 10 s), under
 With plain `docker run` (no compose), pass `--stop-timeout 30`: Docker's default of 10 seconds kills the process before the
 20-second shutdown grace is over, and a request in flight is cut off.
 
+## The image from CI (GHCR)
+
+`.github/workflows/image.yml` builds the image on every push to `develop` that touches what goes into it (the
+`Dockerfile`, the crates, the web app, the lock file) and can push it to GitHub's registry. It never runs for a pull
+request, and it does not touch the VPS: the VPS pulls by hand.
+
+- **The build always runs** (for `linux/amd64`, or what the repository variable `IMAGE_PLATFORMS` says), so a merge that
+  breaks the image shows up on `develop`.
+- **The push is off until the repository variable `GHCR_PUSH` is `true`.** Set it under Settings > Secrets and variables
+  > Actions > Variables. The first push is the owner's call.
+- **Tags:** `develop` (moves with every push) and `sha-<seven characters>` (fixed). There is no `latest`: name a tag in
+  the compose file (`image: ghcr.io/codecoradev/dibibest:sha-abc1234`), and a rollback is the previous tag.
+- **Public or private package:** a new GHCR package is private. For a private one the VPS needs, once,
+  `docker login ghcr.io -u <user>` with a token that can read packages; for a public one it needs nothing. Change it
+  under the package's settings on GitHub.
+- **On the VPS, to update:** `docker compose pull && docker compose up -d` (this recreates the container: stop, then
+  start).
+
 ## Rollback
 
 1. Tag every image you deploy (`image: ...:<tag>`, not `latest`), and keep the previous tag.

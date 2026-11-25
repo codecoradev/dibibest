@@ -13,7 +13,7 @@
 services:
   dibibest:
     build: .
-    # image: ghcr.io/<owner>/dibibest:<tag>   # once an image is published; pin a tag, not `latest`
+    # image: ghcr.io/codecoradev/dibibest:<tag>   # once an image is published (see docs/deploy.md); pin a tag, not `latest`
     container_name: dibibest
     restart: unless-stopped
 
