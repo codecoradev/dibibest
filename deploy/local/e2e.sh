@@ -19,6 +19,10 @@ E2E_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 PASS=0
 FAIL=0
 FAILED=()
+# leftovers of an interrupted run: the throw-away container of section 7 would keep the volume from being removed
+cleanup() { [ -n "${CID:-}" ] && docker rm -f "$CID" >/dev/null 2>&1; rm -f "${JAR:-}" "${JAR2:-}" "${JAR4:-}" "${JAR5:-}"; }
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 pass() { PASS=$((PASS + 1)); printf '  ok    %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); FAILED+=("$1"); printf '  FAIL  %s\n' "$1"; [ -n "${2:-}" ] && printf '        %s\n' "$2"; return 0; }
 expect_eq() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "got '$2', wanted '$3'"; fi; }
@@ -139,10 +143,16 @@ else
   done
   expect_eq "a POST after an idle pause of 12 s, three times" "$ok" 3
 fi
-# the refused code of section 2 is a 502 on /auth/callback that the SERVER sends on purpose; any other 5xx is a failure
-BADLINES=$($COMPOSE logs --since "$E2E_START" traefik 2>&1 | grep -E '" 50[234] ' | grep -v '/auth/callback' || true)
-BAD=$(printf '%s' "$BADLINES" | grep -c . || true)
-if [ "$BAD" = 0 ]; then pass "Traefik logged no 502, 503 or 504 since the checks began"; else fail "Traefik logged no 502, 503 or 504 since the checks began" "$(printf '%s' "$BADLINES" | head -3 | cut -c1-240)"; fi
+# Any 502, 503 or 504 that Traefik logged since the checks began is a failure, except the 502 on /auth/callback that the
+# SERVER sends on purpose when the provider refuses a code (section 2). A log that cannot be read is a failure too.
+proxy_5xx_check() {
+  local logs lines n
+  if ! logs=$($COMPOSE logs --since "$E2E_START" traefik 2>&1); then fail "$1" "the Traefik log could not be read"; return; fi
+  lines=$(printf '%s\n' "$logs" | grep -E '" 50[234] ' | grep -vE '/auth/callback.*" 502 ' || true)
+  n=$(printf '%s' "$lines" | grep -c . || true)
+  if [ "$n" = 0 ]; then pass "$1"; else fail "$1" "$(printf '%s' "$lines" | head -3 | cut -c1-240)"; fi
+}
+proxy_5xx_check "Traefik logged no 502, 503 or 504 since the checks began (idle pauses included)"
 
 echo "5. load, the rate limit and a spoofed address"
 codes=$(seq 1 150 | xargs -P 30 -I{} curl -s -o /dev/null -w '%{http_code}\n' "$BASE/" | sort | uniq -c | tr -s ' ' | tr '\n' ';')
@@ -154,6 +164,7 @@ expect_has "past the budget requests get 429" "$codes" "429"
 SPOOF=$(seq 1 30 | xargs -P 30 -I{} curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Forwarded-For: 9.9.9.9' "$BASE/" | grep -c 429 || true)
 if [ "$SPOOF" -ge 20 ]; then pass "a client that writes its own X-Forwarded-For is limited all the same ($SPOOF of 30 refused)"; else fail "a client that writes its own X-Forwarded-For is limited all the same" "only $SPOOF of 30 refused"; fi
 expect_eq "the probes are not limited" "$(status "$BASE/healthz")" 200
+proxy_5xx_check "...and still none after the load"
 
 echo "6. the backup"
 LISTING=$(in_backups 'ls /b' 2>&1); LISTED=$?

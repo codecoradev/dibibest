@@ -51,6 +51,12 @@ for _ in $(seq 1 90); do
 done
 echo
 curl -sf http://localhost:8088/readyz >/dev/null || { echo "the stack did not become ready"; $COMPOSE logs --tail 40; exit 1; }
+# the fake identity provider starts a moment after the server: the sign-in checks need it at once
+for _ in $(seq 1 30); do
+  if curl -sf http://localhost:9000/api/auth/jwks >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+curl -sf http://localhost:9000/api/auth/jwks >/dev/null || { echo "the fake identity provider did not start"; $COMPOSE logs --tail 40 idp; exit 1; }
 
 status=0
 ./e2e.sh $FAST || status=$?
