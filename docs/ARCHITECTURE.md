@@ -115,8 +115,30 @@ already mounts them, so a stage adds routes without editing the composition in `
   - *Connection cap* (`DIBIBEST_MAX_CONNECTIONS`, default 1024): at that many open connections the server stops
     accepting; further ones wait in the operating system's queue until a place is free. With the 120 s idle limit this is
     what bounds a client that opens many silent connections.
-  - Not covered: how slowly a client *reads* a response (there is no write timeout, so a client that never reads holds
-    its connection and its place), and one address opening all the places (the cap is global, not per address).
+  - *Write timeout* (`DIBIBEST_WRITE_TIMEOUT_SECS`, default 60): the socket is wrapped so that a write that makes no
+    progress at all for that long fails and ends the connection (hyper 1 has no write timeout of its own). The timer
+    runs only while a write is waiting on the peer and restarts with every byte it takes, so a client that reads slowly
+    but steadily is not cut off, and an idle keep-alive connection is not touched. A client that sends a request and
+    never reads a response bigger than the kernel buffers take is dropped after it, and its place under the cap is free
+    again. One that never reads a *small* response never makes a write wait: the response fits the buffers, the
+    connection goes idle, and the header timeout ends it.
+  - *Cap per address* (`DIBIBEST_MAX_CONNECTIONS_PER_IP`, default 0 = off): an address (IPv4 exact, IPv6 by /64, the key
+    of the rate limiter) may hold that many connections at once. The next one is accepted at the TCP level and closed at
+    once, with no response; it is not queued, because a queue would let one address fill the global one. The count is
+    released when the connection ends by any path (close, error, abort at shutdown). **Behind a reverse proxy every
+    connection comes from the proxy's address**, so the cap would limit the proxy and every client with it; the server
+    therefore refuses to start with the cap on and `DIBIBEST_TRUSTED_PROXIES` above 0. Behind a proxy, limit per client
+    at the proxy.
+  - *Upgraded connections* (the live WebSocket to come). Each request carries a `conn::UpgradeSlot` in its extensions. A
+    handler that answers `101` takes it and passes its task to `UpgradeSlot::spawn`, which gives the task a `Shutdown`
+    signal to wait on and keeps the connection's places under both caps held until the task ends. `serve_until` waits
+    for these tasks after the connections, within the same grace period, and then aborts them. They are kept in a
+    `JoinSet` behind a lock (a bare counter could not abort). The write timeout still applies to the upgraded IO; a read
+    has no timeout, so an idle or ping policy is the task's to implement (issue #88). `.with_upgrades()` on the hyper
+    connection is pinned by a test that performs an upgrade through a test-only route.
+  - Not covered: blocking work (`spawn_blocking`) outlives the abort at the end of the grace period; the MCP tools run
+    there and do not touch the store, so the lock is not released under a task that holds it, but this needs a check
+    whenever blocking work that uses the store is added (issue #109, item 3 there).
 - **Shutdown** (SIGTERM or Ctrl-C; a handler that cannot be installed is logged and never counts as a shutdown request):
   stop taking connections and tell every open one to finish (a request in flight is answered, a kept-alive connection
   that is between requests is closed at once, and a fresh one that has sent nothing yet is waited for like a request in
@@ -125,4 +147,5 @@ already mounts them, so a stage adds routes without editing the composition in `
 - **Configuration** is environment only: `DIBIBEST_ADDR` (default `127.0.0.1:8080`), `DIBIBEST_DATA_DIR`,
   `DIBIBEST_WEB_DIR`, `DIBIBEST_TRUSTED_PROXIES`, `DIBIBEST_RATE_PER_MINUTE`, `DIBIBEST_MAX_BODY_BYTES`,
   `DIBIBEST_SHUTDOWN_GRACE_SECS`, `DIBIBEST_HEADER_TIMEOUT_SECS`, `DIBIBEST_REQUEST_TIMEOUT_SECS` (1 to 86400 seconds),
-  `DIBIBEST_MAX_CONNECTIONS` (1 to 1000000). A blank value counts as unset; a bad value stops the start and names the variable.
+  `DIBIBEST_WRITE_TIMEOUT_SECS` (1 to 86400), `DIBIBEST_MAX_CONNECTIONS` (1 to 1000000),
+  `DIBIBEST_MAX_CONNECTIONS_PER_IP` (0 to 1000000, 0 is off). A blank value counts as unset; a bad value stops the start and names the variable.

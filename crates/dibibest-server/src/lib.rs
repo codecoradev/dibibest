@@ -8,6 +8,7 @@ pub mod app;
 pub mod auth;
 pub mod backup;
 pub mod config;
+pub mod conn;
 pub mod limit;
 pub mod live;
 pub mod lock;
@@ -28,7 +29,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
 use tower::Service;
 
@@ -78,7 +79,7 @@ pub enum ServerError {
 pub struct Bound {
     listener: TcpListener,
     state: AppState,
-    grace: Duration,
+    options: ServeOptions,
     backup: Option<backup::BackupConfig>,
     // Declared last so it is released last, after the store has flushed.
     _lock: DataLock,
@@ -99,7 +100,7 @@ pub async fn bind(config: Config) -> Result<Bound, ServerError> {
     Ok(Bound {
         listener,
         state: AppState::new(Arc::new(store), &config),
-        grace: config.shutdown_grace,
+        options: ServeOptions::from_config(&config),
         backup,
         _lock: lock,
     })
@@ -121,15 +122,15 @@ impl Bound {
         let Self {
             listener,
             state,
-            grace,
+            options,
             backup,
             _lock,
         } = self;
+        let grace = options.grace;
         // Everything that holds the store lives inside `serve_until` and the backup task; when both are over they
         // are all gone, and `_lock` is released after that, at the end of this function. The exception is a backup
         // that is still running when the grace period ends: it cannot be cancelled (it is inside SQLite), so the
         // process is about to exit with it, and the half-written copy it leaves is removed by the next run.
-        let (header_timeout, max_connections) = (state.header_timeout, state.max_connections);
         let backup = backup.map(|cfg| backup::spawn(state.store.clone(), cfg));
         // The scheduler is told to stop when the shutdown begins, not when the requests are done: a backup in the
         // middle of its work then gets the whole grace period beside them, instead of a second one after them.
@@ -145,15 +146,7 @@ impl Bound {
                 }
             }
         };
-        let served = serve_until(
-            listener,
-            router(state),
-            header_timeout,
-            max_connections,
-            grace,
-            shutdown,
-        )
-        .await;
+        let served = serve_until(listener, router(state), options, shutdown).await;
         if let Some(backup) = backup {
             // however serve_until ended, the scheduler must be told
             if let Some(signal) = signal {
@@ -170,6 +163,33 @@ impl Bound {
     }
 }
 
+/// The limits of the accept loop.
+#[derive(Debug, Clone, Copy)]
+pub struct ServeOptions {
+    /// How long a connection has to deliver the headers of its next request.
+    pub header_timeout: Duration,
+    /// How long a write may make no progress at all before the connection is dropped.
+    pub write_timeout: Duration,
+    /// Connections served at once (clamped into what a semaphore can hold).
+    pub max_connections: usize,
+    /// Connections one address may hold at once; 0 is no limit.
+    pub max_per_ip: usize,
+    /// How long a shutdown waits for what is in flight.
+    pub grace: Duration,
+}
+
+impl ServeOptions {
+    pub fn from_config(c: &Config) -> Self {
+        Self {
+            header_timeout: c.header_timeout,
+            write_timeout: c.write_timeout,
+            max_connections: c.max_connections,
+            max_per_ip: c.max_connections_per_ip,
+            grace: c.shutdown_grace,
+        }
+    }
+}
+
 /// Serves `app` on `listener` until `shutdown` completes.
 ///
 /// Each connection is an HTTP/1.1 connection of `hyper`, served by a task of its own. A connection that has not
@@ -183,10 +203,16 @@ impl Bound {
 /// close. A connection that holds its place for the full `header_timeout` while sending nothing is therefore the
 /// cost of a client that opens many: the cap bounds it, and the timeout ends each one.
 ///
+/// A write that makes no progress for `write_timeout` ends the connection, so a client that never reads its
+/// response cannot hold a place. With `max_per_ip` above 0 an address that already holds that many connections has
+/// the next one accepted and closed at once, with no response (it is not queued, so one address cannot fill the
+/// queue). A request that upgrades its connection hands it to a task of its own through [`conn::UpgradeSlot`]; the
+/// task keeps both places and is told to finish at shutdown.
+///
 /// When `shutdown` completes the listener is dropped and every connection is told to finish: a request in flight
 /// is answered, an idle connection that has completed a request is closed at once, and one that has sent nothing
 /// yet is treated as a request in flight (hyper cannot tell it from a slow one) and waited for. After `grace`,
-/// whatever is still open is dropped. The
+/// whatever is still open is dropped (upgraded tasks share the same grace period). The
 /// connection tasks are all gone, and with them their copies of `app`, when this returns.
 ///
 /// Only HTTP/1.1 is spoken: the server sits behind a reverse proxy that terminates TLS and talks HTTP/1.1 to it,
@@ -195,13 +221,20 @@ impl Bound {
 pub async fn serve_until(
     listener: TcpListener,
     app: Router,
-    header_timeout: Duration,
-    max_connections: usize,
-    grace: Duration,
+    options: ServeOptions,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
+    let ServeOptions {
+        header_timeout,
+        write_timeout,
+        max_connections,
+        max_per_ip,
+        grace,
+    } = options;
+    let per_ip = (max_per_ip > 0).then(|| conn::PerAddress::new(max_per_ip));
     let (drain_tx, drain_rx) = watch::channel(());
     let mut connections = JoinSet::new();
+    let upgrades = conn::Upgrades::default();
     let mut shutdown = std::pin::pin!(shutdown);
     // 0 would never accept anything, and more than the semaphore can hold would panic: both are put in range
     // here because this function is public (the configuration is checked already, so this only matters to a caller
@@ -225,13 +258,23 @@ pub async fn serve_until(
             () = &mut shutdown => break,
             accepted = listener.accept() => match accepted {
                 Ok((stream, peer)) => {
+                    // An address at its limit is accepted and closed at once, with no response. It is not queued:
+                    // a queue would let that one address fill the global one.
+                    let ip_place = match per_ip.as_ref().map(|p| p.try_acquire(peer.ip())) {
+                        Some(None) => {
+                            tracing::debug!(%peer, "connection refused: the address holds the most it may");
+                            continue;
+                        }
+                        Some(Some(permit)) => Some(permit),
+                        None => None,
+                    };
                     connections.spawn(serve_connection(
                         stream,
                         peer,
                         app.clone(),
-                        header_timeout,
+                        (header_timeout, write_timeout),
+                        conn::Connection::new(place, ip_place, upgrades.clone(), drain_rx.clone()),
                         drain_rx.clone(),
-                        place,
                     ));
                 }
                 Err(e) => {
@@ -252,7 +295,9 @@ pub async fn serve_until(
         open = connections.len(),
         "no longer accepting; waiting for requests in flight"
     );
-    let drained = tokio::time::timeout(grace, async {
+    // One grace period for everything that is still running, not one per kind of task.
+    let deadline = tokio::time::Instant::now() + grace;
+    let drained = tokio::time::timeout_at(deadline, async {
         while let Some(done) = connections.join_next().await {
             log_if_panicked(done);
         }
@@ -266,6 +311,29 @@ pub async fn serve_until(
         connections.abort_all();
         while let Some(done) = connections.join_next().await {
             log_if_panicked(done);
+        }
+    }
+    // The connections that were upgraded (a WebSocket) left the set above when their 101 went out. Their tasks
+    // were told with the same signal; they get what is left of the grace period and are then aborted. Every
+    // connection task is gone here, so nothing can add to the set any more.
+    let mut upgraded = upgrades.take();
+    if !upgraded.is_empty() {
+        tracing::info!(open = upgraded.len(), "waiting for upgraded connections");
+        let drained = tokio::time::timeout_at(deadline, async {
+            while let Some(done) = upgraded.join_next().await {
+                log_if_panicked(done);
+            }
+        })
+        .await;
+        if drained.is_err() {
+            tracing::warn!(
+                open = upgraded.len(),
+                "grace period over, closing upgraded connections that are still open"
+            );
+            upgraded.abort_all();
+            while let Some(done) = upgraded.join_next().await {
+                log_if_panicked(done);
+            }
         }
     }
     // `app` and the state in it go here, after the last connection task has gone.
@@ -301,22 +369,27 @@ async fn serve_connection(
     stream: tokio::net::TcpStream,
     peer: SocketAddr,
     app: Router,
-    header_timeout: Duration,
+    (header_timeout, write_timeout): (Duration, Duration),
+    connection: conn::Connection,
     mut drain: watch::Receiver<()>,
-    _place: OwnedSemaphorePermit,
 ) {
     let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
         let mut app = app.clone();
+        let slot = connection.slot();
         async move {
             let mut req = req.map(axum::body::Body::new);
             req.extensions_mut().insert(ConnectInfo(peer));
+            req.extensions_mut().insert(slot);
             app.call(req).await
         }
     });
     let connection = http1::Builder::new()
         .timer(TokioTimer::new())
         .header_read_timeout(header_timeout)
-        .serve_connection(TokioIo::new(stream), service)
+        .serve_connection(
+            TokioIo::new(conn::WriteTimeout::new(stream, write_timeout)),
+            service,
+        )
         // Upgrades are how the live WebSocket will arrive.
         .with_upgrades();
     let mut connection = std::pin::pin!(connection);
