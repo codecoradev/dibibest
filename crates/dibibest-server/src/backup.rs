@@ -177,9 +177,35 @@ fn remove_partials(dir: &Path) {
     }
 }
 
+/// Closes `dir` to everybody but its owner, and every backup in it too (`0700` and `0600`). A backup holds every
+/// project in the database, so it is not for other users of the host; with the directory closed first, a file made
+/// inside it is not readable by them even in the moment before its own mode is set. If the mode cannot be changed
+/// (the directory belongs to somebody else) that is logged and the backups go on, because a backup that is readable
+/// is still better than none.
+#[cfg(unix)]
+fn tighten(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let set = |path: &Path, mode: u32| {
+        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
+            tracing::warn!(
+                "backup: cannot restrict {} to its owner: {e}",
+                path.display()
+            );
+        }
+    };
+    set(dir, 0o700);
+    for (_, path) in backups(dir) {
+        set(&path, 0o600);
+    }
+}
+
+#[cfg(not(unix))]
+fn tighten(_dir: &Path) {}
+
 /// Makes sure backups can be written to `dir` (creates it, writes and removes a small file).
 pub fn check_dir(dir: &Path) -> Result<(), BackupError> {
     std::fs::create_dir_all(dir).map_err(io(format!("cannot create {}", dir.display())))?;
+    tighten(dir);
     let probe = dir.join(".dibibest-write-test");
     std::fs::write(&probe, b"ok").map_err(io(format!("cannot write to {}", dir.display())))?;
     let _ = std::fs::remove_file(probe);
@@ -196,6 +222,8 @@ pub fn run_once(
     keep: usize,
 ) -> Result<PathBuf, BackupError> {
     std::fs::create_dir_all(dir).map_err(io(format!("cannot create {}", dir.display())))?;
+    // closed before anything is written into it
+    tighten(dir);
     remove_partials(dir);
     let name = file_name(now_unix);
     let final_path = dir.join(&name);
@@ -217,6 +245,7 @@ pub fn run_once(
     std::fs::rename(&partial, &final_path)
         .map_err(io(format!("cannot rename {}", partial.display())))?;
     let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
+    tighten(dir);
     if let Err(e) = prune(dir, keep, Some(&final_path)) {
         // the backup itself is fine; old ones are left for the next run
         tracing::warn!(

@@ -167,7 +167,11 @@ would miss what is still in the `-wal` file.
 - **Where:** a host directory bind-mounted into the container, **not the data volume**: a backup on the volume it
   protects is lost with it. The database itself stays on the named volume `dibibest-data` (SQLite in WAL mode lost data
   on a Docker Desktop bind mount in another project). The server runs as uid 10001, so make the directory writable for it
-  once: `mkdir backups && sudo chown 10001:10001 backups`. If the directory cannot be written to the server **refuses to
+  once: `mkdir -m 700 backups && sudo chown 10001:10001 backups`. The server itself closes the directory to everybody else
+  (`0700`) and each backup to its owner (`0600`), since a backup holds every project in the database; as the files belong
+  to uid 10001, read them on the host with `sudo`, or `docker run` as in Restore. If the server cannot change the modes
+  (a directory owned by somebody else, a network share that ignores them), it logs `cannot restrict ... to its owner` on
+  every backup and carries on: the copies are then only as private as that directory is. If the directory cannot be written to the server **refuses to
   start** and says so, because a server that looks fine and never backs up is worse.
 - **When:** every `DIBIBEST_BACKUP_INTERVAL_HOURS` (default 24; 1 to 8760). Restarting does not make an extra one: the
   first backup waits for what is left of the interval since the newest one, or is made at once if there is none or the
@@ -186,7 +190,7 @@ would miss what is still in the `-wal` file.
 
 A backup file is a complete database. To use one, stop the server, move the current database aside, put the backup in
 its place, start the server again. Replace the file name in the second `docker run` with the backup you want
-(`ls backups`).
+(`sudo ls backups`: the directory is closed to other users).
 
 The steps are joined with `&&` on purpose: if one fails, the next does not run. In particular a failed copy must not be
 followed by starting the server, which would create a new, empty database. The first `docker run` moves the current

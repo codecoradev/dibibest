@@ -477,3 +477,62 @@ fn a_clock_that_is_not_set_is_not_believed() {
     assert!(!plausible_clock(-5));
     assert!(plausible_clock(1_795_508_600));
 }
+
+// ---- permissions: a backup holds everybody's projects ------------------------------------------------------
+
+#[cfg(unix)]
+mod permissions {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn mode(path: &Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn a_backup_is_readable_by_its_owner_only_and_so_is_the_directory_it_made() {
+        let live = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let store = store_with_log(live.path());
+        let dir = out.path().join("made-by-the-server");
+        let path = run_once(&store, &dir, 1_000_000, 7).unwrap();
+        assert_eq!(mode(&path), 0o600, "the backup file");
+        assert_eq!(mode(&dir), 0o700, "the directory");
+    }
+
+    #[test]
+    fn a_directory_that_was_open_to_everyone_is_closed_and_every_backup_in_it_is_owner_only() {
+        let live = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let store = store_with_log(live.path());
+        std::fs::set_permissions(out.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        // a backup an earlier version made, readable by others
+        let old = out.path().join(file_name(500_000));
+        std::fs::write(&old, b"older backup").unwrap();
+        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o644)).unwrap();
+        run_once(&store, out.path(), 1_000_000, 7).unwrap();
+        assert_eq!(mode(out.path()), 0o700);
+        assert_eq!(mode(&old), 0o600, "an older backup is tightened too");
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_backup_keeps_its_own_mode() {
+        let live = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let store = store_with_log(live.path());
+        let other = out.path().join("notes.txt");
+        std::fs::write(&other, b"not a backup").unwrap();
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o644)).unwrap();
+        run_once(&store, out.path(), 1_000_000, 7).unwrap();
+        assert_eq!(mode(&other), 0o644, "only backups are restricted");
+    }
+
+    #[test]
+    fn the_write_test_leaves_nothing_behind_and_the_checked_directory_is_closed() {
+        let out = tempfile::tempdir().unwrap();
+        let dir = out.path().join("checked");
+        dibibest_server::backup::check_dir(&dir).unwrap();
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+}
