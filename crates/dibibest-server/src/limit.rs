@@ -9,10 +9,10 @@ use std::net::{IpAddr, Ipv6Addr};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-/// The client a bucket belongs to. A person with an IPv6 network owns a whole /64 (2^64 addresses) and could
+/// The client an address belongs to (the key of a rate bucket, and of the count of open connections). A person with an IPv6 network owns a whole /64 (2^64 addresses) and could
 /// otherwise take a fresh bucket by changing address on every request, so the network is the client. An
 /// IPv4-mapped address is the same client as the IPv4 address.
-fn bucket_key(ip: IpAddr) -> IpAddr {
+pub fn network_key(ip: IpAddr) -> IpAddr {
     match ip.to_canonical() {
         IpAddr::V6(v6) => {
             let mut octets = [0u8; 16];
@@ -49,7 +49,7 @@ impl RateLimiter {
 
     /// Takes a token for `ip`, or says how long until there is one.
     pub fn check_at(&self, ip: IpAddr, now: Instant) -> Result<(), Duration> {
-        let ip = bucket_key(ip);
+        let ip = network_key(ip);
         let mut buckets = self.buckets.lock().unwrap_or_else(PoisonError::into_inner);
         if buckets.len() >= MAX_TRACKED && !buckets.contains_key(&ip) {
             self.make_room(&mut buckets, now);

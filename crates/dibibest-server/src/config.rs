@@ -93,6 +93,13 @@ pub struct Config {
     /// `DIBIBEST_MAX_CONNECTIONS`: how many connections are served at once. Past it the server stops accepting,
     /// and further connections wait in the queue of the operating system until one closes.
     pub max_connections: usize,
+    /// `DIBIBEST_WRITE_TIMEOUT_SECS`: how long a write to a client may make no progress at all (1 to 86400). A client
+    /// that never reads its response is cut off after it.
+    pub write_timeout: Duration,
+    /// `DIBIBEST_MAX_CONNECTIONS_PER_IP`: how many connections one address (an IPv6 network counts as one) may hold
+    /// at once; further ones are closed at once. 0, the default, is no limit. Refused together with
+    /// `DIBIBEST_TRUSTED_PROXIES`, because behind a proxy every connection comes from the proxy.
+    pub max_connections_per_ip: usize,
     /// `DIBIBEST_PUBLIC_URL`: the origin people use to reach the server, such as `https://dibibest.codecora.dev`.
     /// The redirect address registered with the provider, the `Secure` flag of cookies and the same-origin check
     /// all come from it, never from the `Host` header, which a client can write. Needed when sign-in is on.
@@ -129,6 +136,8 @@ impl Default for Config {
             header_timeout: Duration::from_secs(120),
             request_timeout: Duration::from_secs(30),
             max_connections: 1024,
+            write_timeout: Duration::from_secs(60),
+            max_connections_per_ip: 0,
             backup_dir: None,
             backup_interval: Duration::from_secs(24 * 3_600),
             backup_keep: 7,
@@ -245,6 +254,16 @@ impl Config {
                     other => Ok(other),
                 }
             };
+        let max_connections_per_ip = in_range("DIBIBEST_MAX_CONNECTIONS_PER_IP", 0, 1_000_000)?
+            .map(|n| to_usize("DIBIBEST_MAX_CONNECTIONS_PER_IP", n))
+            .transpose()?
+            .unwrap_or(d.max_connections_per_ip);
+        if max_connections_per_ip > 0 && trusted_proxies > 0 {
+            return Err(ConfigError {
+                var: "DIBIBEST_MAX_CONNECTIONS_PER_IP",
+                reason: "cannot be used with DIBIBEST_TRUSTED_PROXIES above 0: behind a reverse proxy every connection comes from the proxy's own address, so the cap would limit the proxy and with it every client; set it to 0 and let the proxy limit connections per client".into(),
+            });
+        }
         let backup_dir = value("DIBIBEST_BACKUP_DIR").map(|v| PathBuf::from(v.trim()));
         let backup_hours = in_range("DIBIBEST_BACKUP_INTERVAL_HOURS", 1, 8_760)?;
         let backup_keep = in_range("DIBIBEST_BACKUP_KEEP", 1, 1_000)?
@@ -289,6 +308,8 @@ impl Config {
                     })
                 }
             },
+            write_timeout: seconds("DIBIBEST_WRITE_TIMEOUT_SECS", d.write_timeout)?,
+            max_connections_per_ip,
             public_url,
             issuer,
             oidc,

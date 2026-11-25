@@ -5,12 +5,14 @@
 //! a good part of the timeout, so a slow machine does not fail the test and a missing timeout does.
 
 use axum::body::Bytes;
-use axum::extract::{ConnectInfo, Path};
+use axum::extract::{ConnectInfo, Path, Request};
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::Router;
 use dibibest_server::app::{router_with, AppState};
 use dibibest_server::config::Config;
-use dibibest_server::{bind, serve_until, ServerError};
+use dibibest_server::conn::UpgradeSlot;
+use dibibest_server::{bind, serve_until, ServeOptions, ServerError};
 use dibibest_store::SqliteStore;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -24,6 +26,9 @@ use tokio::time::{sleep, timeout};
 
 /// Longer than anything that should happen; a test that waits this long has failed.
 const CEILING: Duration = Duration::from_secs(8);
+
+/// The size of the `/big` body.
+const BIG: usize = 16 * 1024 * 1024;
 
 fn base_config(dir: &std::path::Path) -> Config {
     let web = dir.join("web");
@@ -57,6 +62,10 @@ fn misbehaving() -> Router<AppState> {
         )
         // Does not read the body at all.
         .route("/ignore", post(|| async { "ignored" }))
+        // A body far beyond what the kernel buffers hold.
+        .route("/big", get(|| async { vec![7u8; BIG] }))
+        // Upgrades the connection and echoes what it is sent; see `upgraded`.
+        .route("/upgrade/{mode}", get(upgrade))
         // Tells what address the connection came from.
         .route(
             "/peer",
@@ -101,9 +110,7 @@ async fn start(configure: impl FnOnce(&mut Config)) -> Server {
     let task = tokio::spawn(serve_until(
         listener,
         router_with(state, misbehaving()),
-        config.header_timeout,
-        config.max_connections,
-        config.shutdown_grace,
+        ServeOptions::from_config(&config),
         async move {
             let _ = stopped.await;
         },
@@ -737,4 +744,370 @@ async fn a_cap_of_zero_or_beyond_what_a_semaphore_holds_is_put_in_range_not_a_ha
         server.stop();
         server.finished().await;
     }
+}
+
+// ── the write timeout (issue #109) ──────────────────────────────────────────────────────────────────────
+
+/// A client whose receive buffer is tiny, so the server's response backs up at once.
+async fn small_buffer_client(addr: SocketAddr) -> TcpStream {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    socket.connect(addr).await.unwrap()
+}
+
+#[tokio::test]
+async fn a_client_that_never_reads_its_response_is_cut_off_and_frees_its_place() {
+    let mut server = start(|c| {
+        c.max_connections = 1;
+        c.write_timeout = Duration::from_millis(400);
+    })
+    .await;
+    let mut stuck = small_buffer_client(server.addr).await;
+    stuck
+        .write_all(b"GET /big HTTP/1.1\r\nHost: x\r\n\r\n")
+        .await
+        .unwrap();
+    // the only place is held by `stuck` until the write timeout ends it; the second client is served after that
+    let started = Instant::now();
+    let mut other = TcpStream::connect(server.addr).await.unwrap();
+    other
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let (reply, _) = until_closed(&mut other).await;
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    assert!(
+        started.elapsed() >= Duration::from_millis(300),
+        "the place was free before the write timeout: {:?}",
+        started.elapsed()
+    );
+    drop(stuck);
+    server.stop();
+    server.finished().await;
+}
+
+#[tokio::test]
+async fn a_client_that_reads_slowly_but_steadily_is_not_cut_off() {
+    let mut server = start(|c| c.write_timeout = Duration::from_millis(500)).await;
+    let mut slow = small_buffer_client(server.addr).await;
+    slow.write_all(b"GET /big HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    // 1 MiB every 100 ms: each step is well inside the timeout, the whole is several times longer than it
+    let started = Instant::now();
+    let mut got = Vec::new();
+    let mut chunk = vec![0u8; 1024 * 1024];
+    loop {
+        sleep(Duration::from_millis(100)).await;
+        let n = timeout(CEILING, slow.read(&mut chunk))
+            .await
+            .expect("the body keeps coming")
+            .unwrap();
+        if n == 0 {
+            break;
+        }
+        got.extend_from_slice(&chunk[..n]);
+    }
+    assert!(
+        started.elapsed() > Duration::from_millis(600),
+        "the read was too fast to prove anything: {:?}",
+        started.elapsed()
+    );
+    let head_end = got.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+    assert_eq!(got.len() - head_end, BIG, "the whole body arrived");
+    server.stop();
+    server.finished().await;
+}
+
+// ── the cap per address (issue #109) ────────────────────────────────────────────────────────────────────
+
+/// Opens a connection and waits until it has been served, which proves it was accepted and is held open.
+async fn held_connection(addr: SocketAddr) -> TcpStream {
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    s.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
+        .await
+        .unwrap();
+    let mut buf = [0u8; 12];
+    timeout(CEILING, s.read_exact(&mut buf))
+        .await
+        .expect("a connection under the cap is served")
+        .unwrap();
+    assert_eq!(&buf, b"HTTP/1.1 200");
+    s
+}
+
+/// Whether the server answers a fresh connection from this machine, trying for a while: a place is given back a
+/// moment after the client closes, so the first try may still find it taken.
+async fn eventually_served(addr: SocketAddr) -> bool {
+    let deadline = Instant::now() + CEILING;
+    while Instant::now() < deadline {
+        let mut s = TcpStream::connect(addr).await.unwrap();
+        let _ = s
+            .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .await;
+        let mut out = Vec::new();
+        let _ = timeout(Duration::from_secs(1), s.read_to_end(&mut out)).await;
+        if out.starts_with(b"HTTP/1.1 200") {
+            return true;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    false
+}
+
+#[tokio::test]
+async fn a_connection_past_the_per_address_cap_is_closed_at_once_and_the_others_keep_working() {
+    let mut server = start(|c| c.max_connections_per_ip = 2).await;
+    let mut first = held_connection(server.addr).await;
+    let _second = held_connection(server.addr).await;
+    // the third is accepted at the TCP level and closed without a word
+    let mut third = TcpStream::connect(server.addr).await.unwrap();
+    let _ = third
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .await;
+    let (reply, took) = until_closed(&mut third).await;
+    assert!(
+        reply.is_empty(),
+        "a refused connection gets no response: {reply}"
+    );
+    assert!(
+        took < Duration::from_secs(2),
+        "closed at once, not queued: {took:?}"
+    );
+    // the two that were let in are still served (what is left of the first answer comes with the second)
+    first
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let (reply, _) = until_closed(&mut first).await;
+    assert_eq!(reply.matches("HTTP/1.1 200").count(), 1, "{reply}");
+    // one goes away and a new one is accepted
+    drop(first);
+    assert!(
+        eventually_served(server.addr).await,
+        "the count was not released"
+    );
+    server.stop();
+    server.finished().await;
+}
+
+#[tokio::test]
+async fn the_per_address_count_is_released_when_a_connection_is_ended_by_the_server() {
+    // the only place for this address is taken by a silent connection that the header timeout ends
+    let mut server = start(|c| {
+        c.max_connections_per_ip = 1;
+        c.header_timeout = Duration::from_millis(300);
+    })
+    .await;
+    let mut silent = TcpStream::connect(server.addr).await.unwrap();
+    let (reply, _) = until_closed(&mut silent).await;
+    assert!(reply.is_empty());
+    assert!(
+        eventually_served(server.addr).await,
+        "the count was not released"
+    );
+    server.stop();
+    server.finished().await;
+}
+
+#[tokio::test]
+async fn the_global_cap_still_queues_with_a_per_address_cap_on() {
+    let mut server = start(|c| {
+        c.max_connections = 1;
+        c.max_connections_per_ip = 5;
+    })
+    .await;
+    let held = held_connection(server.addr).await;
+    let mut queued = TcpStream::connect(server.addr).await.unwrap();
+    queued
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut out = Vec::new();
+    let early = timeout(Duration::from_millis(500), queued.read_to_end(&mut out)).await;
+    assert!(
+        early.is_err(),
+        "served or closed past the global cap: {out:?}"
+    );
+    drop(held);
+    let (reply, _) = until_closed(&mut queued).await;
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    server.stop();
+    server.finished().await;
+}
+
+#[tokio::test]
+async fn without_a_per_address_cap_one_address_may_hold_many_connections() {
+    let mut server = start(|_| {}).await;
+    let mut held = Vec::new();
+    for _ in 0..8 {
+        held.push(held_connection(server.addr).await);
+    }
+    server.stop();
+    server.finished().await;
+}
+
+// ── upgraded connections (issue #109) ───────────────────────────────────────────────────────────────────
+
+/// What a WebSocket handler will do, with the bytes of the protocol left out: answer 101, take the connection
+/// over in a task, echo. `mode` is how that task treats the shutdown signal: `echo` stops at once, `slowbye`
+/// says goodbye after 300 ms and stops, `deaf` never looks at it.
+async fn upgrade(Path(mode): Path<String>, mut req: Request) -> Response {
+    let slot = req
+        .extensions_mut()
+        .remove::<UpgradeSlot>()
+        .expect("every request carries the slot of its connection");
+    let on = hyper::upgrade::on(req);
+    slot.spawn(move |mut shutdown| async move {
+        let Ok(up) = on.await else { return };
+        let mut io = hyper_util::rt::TokioIo::new(up);
+        let mut buf = [0u8; 1024];
+        loop {
+            tokio::select! {
+                () = shutdown.wait(), if mode != "deaf" => {
+                    if mode == "slowbye" {
+                        sleep(Duration::from_millis(300)).await;
+                        let _ = io.write_all(b"bye").await;
+                    }
+                    break;
+                }
+                n = io.read(&mut buf) => match n {
+                    Ok(n) if n > 0 => {
+                        if io.write_all(&buf[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                    _ => break,
+                },
+            }
+        }
+    });
+    Response::builder()
+        .status(101)
+        .header("connection", "upgrade")
+        .header("upgrade", "test")
+        .body(axum::body::Body::empty())
+        .unwrap()
+}
+
+/// Connects, upgrades and checks the 101.
+async fn upgraded(addr: SocketAddr, mode: &str) -> TcpStream {
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    s.write_all(
+        format!("GET /upgrade/{mode} HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n")
+            .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        timeout(CEILING, s.read_exact(&mut byte))
+            .await
+            .expect("the answer to the upgrade")
+            .unwrap();
+        head.push(byte[0]);
+    }
+    let head = String::from_utf8_lossy(&head);
+    assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+    s
+}
+
+async fn echoes(s: &mut TcpStream, word: &[u8]) {
+    s.write_all(word).await.unwrap();
+    let mut got = vec![0u8; word.len()];
+    timeout(CEILING, s.read_exact(&mut got))
+        .await
+        .expect("the echo")
+        .unwrap();
+    assert_eq!(got, word);
+}
+
+#[tokio::test]
+async fn an_upgraded_connection_is_handed_over_and_echoes() {
+    // with `.with_upgrades()` removed hyper cannot hand the connection to `hyper::upgrade::on`
+    let mut server = start(|_| {}).await;
+    let mut s = upgraded(server.addr, "echo").await;
+    echoes(&mut s, b"ping").await;
+    echoes(&mut s, b"pong").await;
+    drop(s);
+    server.stop();
+    server.finished().await;
+}
+
+#[tokio::test]
+async fn an_upgraded_connection_keeps_its_place_under_the_global_cap() {
+    let mut server = start(|c| c.max_connections = 1).await;
+    let up = upgraded(server.addr, "echo").await;
+    let mut queued = TcpStream::connect(server.addr).await.unwrap();
+    queued
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut out = Vec::new();
+    let early = timeout(Duration::from_millis(500), queued.read_to_end(&mut out)).await;
+    assert!(
+        early.is_err(),
+        "served beyond the cap while a connection was upgraded: {out:?}"
+    );
+    drop(up);
+    let (reply, _) = until_closed(&mut queued).await;
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    server.stop();
+    server.finished().await;
+}
+
+#[tokio::test]
+async fn an_upgraded_connection_keeps_its_place_under_the_per_address_cap() {
+    let mut server = start(|c| c.max_connections_per_ip = 1).await;
+    let up = upgraded(server.addr, "echo").await;
+    let mut second = TcpStream::connect(server.addr).await.unwrap();
+    let _ = second
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .await;
+    let (reply, _) = until_closed(&mut second).await;
+    assert!(reply.is_empty(), "the address was over its cap: {reply}");
+    drop(up);
+    assert!(
+        eventually_served(server.addr).await,
+        "the count was not released"
+    );
+    server.stop();
+    server.finished().await;
+}
+
+#[tokio::test]
+async fn shutdown_tells_an_upgraded_task_to_finish_and_waits_for_it() {
+    let mut server = start(|c| c.shutdown_grace = Duration::from_secs(5)).await;
+    let mut s = upgraded(server.addr, "slowbye").await;
+    echoes(&mut s, b"ping").await;
+    server.stop();
+    let (reply, _) = until_closed(&mut s).await;
+    assert_eq!(
+        reply, "bye",
+        "the task was told, and was let finish what it was saying"
+    );
+    let took = server.finished().await;
+    assert!(
+        took < Duration::from_secs(4),
+        "it did not need the whole grace period: {took:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_upgraded_task_that_ignores_the_signal_is_aborted_after_the_grace_period() {
+    let mut server = start(|c| c.shutdown_grace = Duration::from_millis(400)).await;
+    let mut s = upgraded(server.addr, "deaf").await;
+    echoes(&mut s, b"ping").await;
+    server.stop();
+    let started = Instant::now();
+    // the client is cut off once the task is aborted
+    let (reply, _) = until_closed(&mut s).await;
+    assert!(reply.is_empty());
+    assert!(
+        started.elapsed() >= Duration::from_millis(300),
+        "it was waited for until the grace period: {:?}",
+        started.elapsed()
+    );
+    server.finished().await;
 }

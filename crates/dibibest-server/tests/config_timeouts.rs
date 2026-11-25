@@ -102,3 +102,63 @@ fn the_cap_on_open_connections_has_a_default_and_a_range() {
     }
     assert!(lookup(&[("DIBIBEST_MAX_CONNECTIONS", "1000000")]).is_ok());
 }
+
+// ── the write timeout and the per-address cap (issue #109) ──────────────────────────────────────────────
+
+#[test]
+fn the_write_timeout_has_a_default_a_range_and_treats_blank_as_unset() {
+    const VAR: &str = "DIBIBEST_WRITE_TIMEOUT_SECS";
+    assert_eq!(lookup(&[]).unwrap().write_timeout, Duration::from_secs(60));
+    assert_eq!(
+        lookup(&[(VAR, "5")]).unwrap().write_timeout,
+        Duration::from_secs(5)
+    );
+    for blank in ["", "  "] {
+        assert_eq!(
+            lookup(&[(VAR, blank)]).unwrap().write_timeout,
+            Duration::from_secs(60)
+        );
+    }
+    for bad in ["soon", "-1", "1.5", "0", "86401", "18446744073709551616"] {
+        let err = lookup(&[(VAR, bad)]).unwrap_err().to_string();
+        assert!(err.contains(VAR), "{bad}: {err}");
+    }
+    assert!(lookup(&[(VAR, "86400")]).is_ok());
+}
+
+#[test]
+fn the_cap_per_address_is_off_by_default_and_zero_means_off() {
+    const VAR: &str = "DIBIBEST_MAX_CONNECTIONS_PER_IP";
+    assert_eq!(lookup(&[]).unwrap().max_connections_per_ip, 0);
+    assert_eq!(lookup(&[(VAR, "0")]).unwrap().max_connections_per_ip, 0);
+    assert_eq!(lookup(&[(VAR, " ")]).unwrap().max_connections_per_ip, 0);
+    assert_eq!(lookup(&[(VAR, "20")]).unwrap().max_connections_per_ip, 20);
+    assert!(lookup(&[(VAR, "1000000")]).is_ok());
+    for bad in ["1000001", "many", "-1", "1.5"] {
+        let err = lookup(&[(VAR, bad)]).unwrap_err().to_string();
+        assert!(err.contains(VAR), "{bad}: {err}");
+    }
+}
+
+#[test]
+fn the_cap_per_address_refuses_to_start_behind_a_trusted_proxy() {
+    // Behind a proxy every connection comes from the proxy's own address, so the cap would limit the proxy.
+    let err = lookup(&[
+        ("DIBIBEST_MAX_CONNECTIONS_PER_IP", "20"),
+        ("DIBIBEST_TRUSTED_PROXIES", "1"),
+    ])
+    .unwrap_err();
+    assert_eq!(err.var, "DIBIBEST_MAX_CONNECTIONS_PER_IP");
+    assert!(err.reason.contains("DIBIBEST_TRUSTED_PROXIES"), "{err}");
+    // off, or no proxy: fine
+    assert!(lookup(&[
+        ("DIBIBEST_MAX_CONNECTIONS_PER_IP", "0"),
+        ("DIBIBEST_TRUSTED_PROXIES", "1"),
+    ])
+    .is_ok());
+    assert!(lookup(&[
+        ("DIBIBEST_MAX_CONNECTIONS_PER_IP", "20"),
+        ("DIBIBEST_TRUSTED_PROXIES", "0"),
+    ])
+    .is_ok());
+}
