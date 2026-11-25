@@ -134,11 +134,12 @@ impl PerAddress {
     pub fn try_acquire(&self, ip: IpAddr) -> Option<AddressPermit> {
         let key = network_key(ip);
         let mut counts = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
-        let n = counts.entry(key).or_insert(0);
-        if *n >= self.max {
+        let held = counts.get(&key).copied().unwrap_or(0);
+        if held >= self.max {
+            // nothing is inserted for a refusal, so the table holds only clients with an open connection
             return None;
         }
-        *n += 1;
+        counts.insert(key, held + 1);
         Some(AddressPermit {
             key,
             counts: self.counts.clone(),
@@ -211,6 +212,10 @@ impl Shutdown {
 /// does: the places under both caps stay held until the task ends, the task is given the shutdown signal, and at
 /// shutdown it is waited for up to the grace period and then aborted. The write timeout still applies to the
 /// upgraded IO (it wraps the socket); a read has no timeout, an idle policy is the task's to make.
+///
+/// The contract is the handler's: one that answers 101 and takes the connection over *without* going through
+/// [`UpgradeSlot::spawn`] escapes both caps, the shutdown signal and the wait for the grace period. Nothing in the
+/// types forces the use of the slot, so a code review of a new upgrade route has to.
 #[derive(Clone)]
 pub struct UpgradeSlot {
     held: Arc<Held>,
@@ -234,7 +239,13 @@ impl UpgradeSlot {
         let task = task(Shutdown(drain));
         let mut set = upgrades.0.lock().unwrap_or_else(PoisonError::into_inner);
         // finished ones are collected as new ones come, so the set stays near the number of open ones
-        while set.try_join_next().is_some() {}
+        while let Some(done) = set.try_join_next() {
+            if let Err(e) = done {
+                if e.is_panic() {
+                    tracing::error!("an upgraded connection's task panicked: {e}");
+                }
+            }
+        }
         set.spawn(async move {
             let _held = held;
             task.await;
@@ -280,6 +291,19 @@ impl Connection {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn a_refusal_leaves_nothing_in_the_table_even_with_a_cap_of_zero() {
+        let per_ip = PerAddress::new(0);
+        assert!(per_ip.try_acquire("192.0.2.1".parse().unwrap()).is_none());
+        assert_eq!(per_ip.clients(), 0, "a refused client is not remembered");
+        let per_ip = PerAddress::new(1);
+        let held = per_ip.try_acquire("192.0.2.1".parse().unwrap()).unwrap();
+        assert!(per_ip.try_acquire("192.0.2.1".parse().unwrap()).is_none());
+        assert_eq!(per_ip.clients(), 1);
+        drop(held);
+        assert_eq!(per_ip.clients(), 0);
+    }
 
     #[tokio::test]
     async fn aborting_an_upgraded_task_gives_both_places_back() {

@@ -119,7 +119,9 @@ already mounts them, so a stage adds routes without editing the composition in `
     progress at all for that long fails and ends the connection (hyper 1 has no write timeout of its own). The timer
     runs only while a write is waiting on the peer and restarts with every byte it takes, so a client that reads slowly
     but steadily is not cut off, and an idle keep-alive connection is not touched. A client that sends a request and
-    never reads the response is dropped after it, and its place under the cap is free again.
+    never reads a response bigger than the kernel buffers take is dropped after it, and its place under the cap is free
+    again. One that never reads a *small* response never makes a write wait: the response fits the buffers, the
+    connection goes idle, and the header timeout ends it.
   - *Cap per address* (`DIBIBEST_MAX_CONNECTIONS_PER_IP`, default 0 = off): an address (IPv4 exact, IPv6 by /64, the key
     of the rate limiter) may hold that many connections at once. The next one is accepted at the TCP level and closed at
     once, with no response; it is not queued, because a queue would let one address fill the global one. The count is

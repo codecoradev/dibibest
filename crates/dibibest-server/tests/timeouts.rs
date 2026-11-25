@@ -789,11 +789,14 @@ async fn a_client_that_never_reads_its_response_is_cut_off_and_frees_its_place()
 #[tokio::test]
 async fn a_client_that_reads_slowly_but_steadily_is_not_cut_off() {
     let mut server = start(|c| c.write_timeout = Duration::from_millis(500)).await;
-    let mut slow = small_buffer_client(server.addr).await;
+    // an ordinary client: with a tiny receive buffer each read would return a few kilobytes and the 16 MiB body would
+    // take minutes to drain where the kernel gives small reads; with the default buffers the server's writes still
+    // stall now and then, each stall ends within a step, and the whole takes several times the timeout
+    let mut slow = TcpStream::connect(server.addr).await.unwrap();
     slow.write_all(b"GET /big HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
         .await
         .unwrap();
-    // 1 MiB every 100 ms: each step is well inside the timeout, the whole is several times longer than it
+    // up to 1 MiB every 100 ms: each step is well inside the timeout, the whole is several times longer than it
     let started = Instant::now();
     let mut got = Vec::new();
     let mut chunk = vec![0u8; 1024 * 1024];
