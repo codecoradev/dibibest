@@ -45,7 +45,7 @@ services:
     volumes:
       - dibibest-data:/data
       # Backups go to a HOST directory, not to the volume they protect. It must exist and be writable for uid 10001
-      # (`mkdir backups && sudo chown 10001:10001 backups`), or the server refuses to start and says why.
+      # (`mkdir -m 700 backups && sudo chown 10001:10001 backups`), or the server refuses to start and says why.
       - ./backups:/backup
 
     # Liveness; the image has the same check. It is repeated here so that this file shows what Docker looks at.

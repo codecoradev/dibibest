@@ -167,7 +167,9 @@ would miss what is still in the `-wal` file.
 - **Where:** a host directory bind-mounted into the container, **not the data volume**: a backup on the volume it
   protects is lost with it. The database itself stays on the named volume `dibibest-data` (SQLite in WAL mode lost data
   on a Docker Desktop bind mount in another project). The server runs as uid 10001, so make the directory writable for it
-  once: `mkdir backups && sudo chown 10001:10001 backups`. If the directory cannot be written to the server **refuses to
+  once: `mkdir -m 700 backups && sudo chown 10001:10001 backups`. The server itself closes the directory to everybody else
+  (`0700`) and each backup to its owner (`0600`), since a backup holds every project in the database; as the files belong
+  to uid 10001, read them on the host with `sudo`, or `docker run` as in Restore. If the directory cannot be written to the server **refuses to
   start** and says so, because a server that looks fine and never backs up is worse.
 - **When:** every `DIBIBEST_BACKUP_INTERVAL_HOURS` (default 24; 1 to 8760). Restarting does not make an extra one: the
   first backup waits for what is left of the interval since the newest one, or is made at once if there is none or the
