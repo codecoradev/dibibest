@@ -13,6 +13,9 @@ CONTAINER=dibibest-local
 FAST=0
 [ "${1:-}" = "--fast" ] && FAST=1
 
+# only what Traefik logs from here on counts: while the stack is starting, Traefik can answer 502 before the backend is up
+E2E_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
 PASS=0
 FAIL=0
 FAILED=()
@@ -135,8 +138,9 @@ else
   done
   expect_eq "a POST after an idle pause of 12 s, three times" "$ok" 3
 fi
-BAD=$($COMPOSE logs traefik 2>&1 | grep -cE '" 50[234] ' || true)
-expect_eq "Traefik logged no 502, 503 or 504" "$BAD" 0
+BADLINES=$($COMPOSE logs --since "$E2E_START" traefik 2>&1 | grep -E '" 50[234] ' || true)
+BAD=$(printf '%s' "$BADLINES" | grep -c . || true)
+if [ "$BAD" = 0 ]; then pass "Traefik logged no 502, 503 or 504 since the checks began"; else fail "Traefik logged no 502, 503 or 504 since the checks began" "$(printf '%s' "$BADLINES" | head -3 | cut -c1-240)"; fi
 
 echo "5. load, the rate limit and a spoofed address"
 codes=$(seq 1 150 | xargs -P 30 -I{} curl -s -o /dev/null -w '%{http_code}\n' "$BASE/" | sort | uniq -c | tr -s ' ' | tr '\n' ';')
