@@ -12,8 +12,11 @@ Run for real on 2026-11-24 (OrbStack, Docker 29, linux/arm64): the clean build, 
 volume (refused), restart on the same volume after `docker rm`, the non-root user, the health check, `docker compose
 config`, `up` and `down`, and a restore of a cold copy of the volume (see Rollback).
 
-**Not run:** the linux/amd64 build (the VPS is probably amd64; the Dockerfile has the amd64 bun checksum but the
-architecture was not built), Traefik and Cloudflare in front, sign-in against Gatehouse, and any request with a real
+Run for real on 2026-11-25 (the same machine): the scheduled backup (the first one at once, none extra after a restart, the
+server refusing to start when the backup directory is read-only) and the restore commands under Backups, copied from this
+file. The image was also **built** for `linux/amd64` (not run on an amd64 host).
+
+**Not run:** the image on an amd64 host (the VPS is probably amd64), Traefik and Cloudflare in front, sign-in against Gatehouse, and any request with a real
 project (the API for projects does not exist yet).
 
 ## Base image
@@ -54,6 +57,9 @@ variables, a value that is only a placeholder (`...`, `xxx`, `changeme`, `todo`)
 | `DIBIBEST_HEADER_TIMEOUT_SECS` | `120` | `120` | A connection must deliver the headers of its next request within this time, or it is closed. It also ends an idle kept-alive connection, so it stays above the 90 s that Traefik keeps an idle upstream connection. 1 to 86400. |
 | `DIBIBEST_REQUEST_TIMEOUT_SECS` | `30` | `30` | From the headers to the start of the response, body and handler together; over it the answer is 408. 1 to 86400. |
 | `DIBIBEST_MAX_CONNECTIONS` | `1024` | `1024` | Connections served at once; past it the server stops accepting and further ones wait in the operating system's queue. 1 to 1000000. |
+| `DIBIBEST_BACKUP_DIR` | unset | unset | Where scheduled backups are written. Unset: no backups. The compose file sets `/backup`. See Backups. |
+| `DIBIBEST_BACKUP_INTERVAL_HOURS` | `24` | `24` | Hours between backups, 1 to 8760. Needs `DIBIBEST_BACKUP_DIR`. |
+| `DIBIBEST_BACKUP_KEEP` | `7` | `7` | How many backups are kept, 1 to 1000. Needs `DIBIBEST_BACKUP_DIR`. |
 | `DIBIBEST_PUBLIC_URL` | unset | unset | The origin people use, `https://dibibest.codecora.dev`: no path, query or credentials; `http` only for `localhost`. Needed when sign-in is on. |
 | `DIBIBEST_OIDC_ISSUER` | unset | unset | Identity provider issuer, no query or fragment. For Gatehouse: `https://identity.azfirazka.com/api/auth` (the value `apps/web/wrangler.toml` uses today). |
 | `DIBIBEST_OIDC_CLIENT_ID` | unset | unset | The Gatehouse client id. |
@@ -148,30 +154,75 @@ request, and it does not touch the VPS: the VPS pulls by hand.
 2. To roll back, set the previous tag in the compose file and `docker compose up -d` (stop first, as above).
 3. The volume is not rolled back with the image. Whether an older server can read a database written by a newer one
    depends on the schema changes between them, and there is no down-migration; before a release that changes the store,
-   take a copy of the data first (next section).
+   take a backup first (next section).
 
-## Backups: there are none yet
+## Backups
 
-**There is no backup command in the server.** The store library has `backup_to` (`VACUUM INTO`, a consistent copy while
-running), but nothing calls it yet; the scheduled backup is a later task of the same epic. Do not rely on one.
+The server makes the backups itself, from inside the running process (nothing to schedule on the host, no second
+container). Each one is a consistent copy made by the store (`VACUUM INTO`), never a copy of the live `.db` file, which
+would miss what is still in the `-wal` file.
 
-Until then, the only copy method that has been tried is a **cold copy**: stop the container, then archive the volume.
-A clean stop leaves the database without a pending WAL (the `-wal` file is gone after a graceful shutdown, observed).
-Never copy `dibibest.db` while the server runs: what is still in `-wal` would be missed.
+- **Switch on** by giving the server a directory: `DIBIBEST_BACKUP_DIR` (the compose file sets `/backup` and mounts
+  the host directory `./backups` there). Without it there are no backups.
+- **Where:** a host directory bind-mounted into the container, **not the data volume**: a backup on the volume it
+  protects is lost with it. The database itself stays on the named volume `dibibest-data` (SQLite in WAL mode lost data
+  on a Docker Desktop bind mount in another project). The server runs as uid 10001, so make the directory writable for it
+  once: `mkdir backups && sudo chown 10001:10001 backups`. If the directory cannot be written to the server **refuses to
+  start** and says so, because a server that looks fine and never backs up is worse.
+- **When:** every `DIBIBEST_BACKUP_INTERVAL_HOURS` (default 24; 1 to 8760). Restarting does not make an extra one: the
+  first backup waits for what is left of the interval since the newest one, or is made at once if there is none or the
+  newest is older than the interval.
+- **How many:** the newest `DIBIBEST_BACKUP_KEEP` (default 7; 1 to 1000) are kept, older ones are deleted. Only files named
+  like a backup are ever touched.
+- **Names:** `dibibest-YYYYMMDDTHHMMSSZ.db` (UTC). A copy is written as `<name>.partial`, flushed to disk and then
+  renamed, so a copy cut short by a crash or a full disk is never taken for a whole one; leftovers are removed by the
+  next run.
+- **Failures** are logged (`backup failed, trying again soon`) and tried again after at most 15 minutes. Watch the log, or
+  the age of the newest file: nothing else reports a failed backup yet.
+- **Not covered:** off-site copies. The backup directory is on the same host (and maybe the same disk) as the data: copy
+  it elsewhere yourself.
+
+### Restore
+
+A backup file is a complete database. To use one, stop the server, move the current database aside, put the backup in
+its place, start the server again. Replace the file name in the second `docker run` with the backup you want
+(`ls backups`).
+
+The steps are joined with `&&` on purpose: if one fails, the next does not run. In particular a failed copy must not be
+followed by starting the server, which would create a new, empty database. The first `docker run` moves the current
+database and its `-wal` and `-shm` files into a new directory on the volume (nothing is deleted); the second puts the
+backup in place.
 
 ```sh
-docker compose stop dibibest
-docker run --rm -v dibibest-data:/data:ro -v "$PWD":/backup alpine:3.22 tar czf /backup/dibibest-data.tgz -C /data .
-docker compose start dibibest
+docker compose stop dibibest \
+&& docker run --rm -v dibibest-data:/data alpine:3.22 sh -ec '
+  old="/data/before-restore-$(date -u +%Y%m%dT%H%M%SZ)"; mkdir "$old"
+  for f in /data/dibibest.db /data/dibibest.db-wal /data/dibibest.db-shm; do
+    if [ -e "$f" ]; then mv "$f" "$old"/; fi
+  done
+  ls -l "$old"' \
+&& docker run --rm -v dibibest-data:/data -v "$PWD/backups":/backup:ro alpine:3.22 sh -ec '
+  cp /backup/dibibest-20261124T082320Z.db /data/dibibest.db
+  chown 10001:10001 /data/dibibest.db
+  ls -l /data/dibibest.db' \
+&& docker compose start dibibest \
+&& docker compose exec dibibest wget -qO- http://127.0.0.1:8080/readyz
 ```
 
-A restore into a new volume (extract, `chown -R 10001:10001`, start a container on it) was run once and the server
-started with `/readyz` 200. That is not a tested disaster-recovery procedure, only a copy you can make today. Compose
-prefixes the volume name with the project name (`<project>_dibibest-data`); check `docker volume ls`.
+If a step fails, the server is still stopped and the old database is where the first step left it (in the
+`before-restore-<time>` directory if that step ran): move it back and start the server.
+
+The compose file names the volume `dibibest-data` explicitly, so these commands mount the volume the service uses. Each
+restore keeps its own `before-restore-<time>` directory on the volume; delete them when you no longer need them.
+The commands above were run as written against a real container (see the top of this page), and `tests/backup.rs`
+compares a restored copy with the live database: the log and the snapshot are equal.
+
+Until the server has a projects API there is little in the database to lose, but the routine is the same one you will
+need later.
 
 ## What does not exist yet
 
-- **No backup command or schedule** (above).
+- **No off-site backup and no alert for a failed backup** (see Backups): the copies stay on the host and a failure is only in the log.
 - **`/mcp` is served by this container but has not met a real connector yet.** The Rust port (issue #94) passes the 55
   shared contract fixtures and its own edge-case tests, but it was never run behind Traefik and Cloudflare, with
   Gatehouse and a real Claude client. It needs `DIBIBEST_OIDC_ISSUER` and `DIBIBEST_PUBLIC_URL`; without them `/mcp` and
