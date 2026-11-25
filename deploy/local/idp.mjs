@@ -9,9 +9,13 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 
 const PORT = 9000;
-const ISSUER = process.env.IDP_ISSUER ?? 'http://localhost:9000/api/auth';
-const CLIENT_ID = process.env.IDP_CLIENT_ID ?? 'local-client';
-const CLIENT_SECRET = process.env.IDP_CLIENT_SECRET ?? 'local-client-secret';
+// The issuer and the client id and secret come from the environment (compose sets them, next to the same values the
+// server is given): nothing in this file is a credential, not even a made-up one.
+const { IDP_ISSUER: ISSUER, IDP_CLIENT_ID: CLIENT_ID, IDP_CLIENT_SECRET: CLIENT_SECRET } = process.env;
+if (!ISSUER || !CLIENT_ID || !CLIENT_SECRET) {
+  console.error('IDP_ISSUER, IDP_CLIENT_ID and IDP_CLIENT_SECRET must be set');
+  process.exit(2);
+}
 const KID = 'local-k1';
 
 const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });

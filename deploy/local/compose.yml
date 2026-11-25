@@ -63,6 +63,11 @@ services:
     image: node:22-alpine
     network_mode: "service:dibibest"
     command: ["node", "/idp.mjs"]
+    environment:
+      # the same issuer, client id and client secret that the dibibest service is given above
+      IDP_ISSUER: http://localhost:9000/api/auth
+      IDP_CLIENT_ID: local-client
+      IDP_CLIENT_SECRET: local-client-secret
     volumes:
       - ./idp.mjs:/idp.mjs:ro
     depends_on: [dibibest]
