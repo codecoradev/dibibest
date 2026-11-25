@@ -285,9 +285,12 @@ pub fn spawn(store: Arc<SqliteStore>, cfg: BackupConfig) -> Backup {
         let mut wait = first_wait(&cfg);
         loop {
             tokio::select! {
-                () = tokio::time::sleep(wait) => {}
+                // a stop that is already waiting is looked at first (a guard, not something a test can pin: a sleep is
+                // never ready on its first poll, so the stop would win here anyway)
+                biased;
                 // a stop, or the sender gone
                 _ = stopped.changed() => return,
+                () = tokio::time::sleep(wait) => {}
             }
             let now = now_unix();
             if !plausible_clock(now) {

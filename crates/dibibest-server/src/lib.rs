@@ -126,7 +126,9 @@ impl Bound {
             _lock,
         } = self;
         // Everything that holds the store lives inside `serve_until` and the backup task; when both are over they
-        // are all gone, and `_lock` is released after that, at the end of this function.
+        // are all gone, and `_lock` is released after that, at the end of this function. The exception is a backup
+        // that is still running when the grace period ends: it cannot be cancelled (it is inside SQLite), so the
+        // process is about to exit with it, and the half-written copy it leaves is removed by the next run.
         let (header_timeout, max_connections) = (state.header_timeout, state.max_connections);
         let backup = backup.map(|cfg| backup::spawn(state.store.clone(), cfg));
         // The scheduler is told to stop when the shutdown begins, not when the requests are done: a backup in the
@@ -159,7 +161,9 @@ impl Bound {
             }
             let left = grace.saturating_sub(begun.get().map_or(Duration::ZERO, |t| t.elapsed()));
             if tokio::time::timeout(left, backup.join()).await.is_err() {
-                tracing::warn!("a backup was still running when the grace period ended");
+                tracing::warn!(
+                    "a backup was still running when the grace period ended; it is abandoned and its partial file is removed by the next run"
+                );
             }
         }
         served

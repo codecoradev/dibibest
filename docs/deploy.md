@@ -185,26 +185,32 @@ would miss what is still in the `-wal` file.
 ### Restore
 
 A backup file is a complete database. To use one, stop the server, move the current database aside, put the backup in
-its place, start the server again. Replace the file name in the second command with the backup you want (`ls backups`).
+its place, start the server again. Replace the file name in the second `docker run` with the backup you want
+(`ls backups`).
+
+The steps are joined with `&&` on purpose: if one fails, the next does not run. In particular a failed copy must not be
+followed by starting the server, which would create a new, empty database. The first `docker run` moves the current
+database and its `-wal` and `-shm` files into a new directory on the volume (nothing is deleted); the second puts the
+backup in place.
 
 ```sh
-docker compose stop dibibest
-# 1. move the current database, with its -wal and -shm files, into a new directory on the volume (nothing is
-#    deleted, and a failing step stops here instead of leaving a stale -wal beside the restored database)
-docker run --rm -v dibibest-data:/data alpine:3.22 sh -ec '
+docker compose stop dibibest \
+&& docker run --rm -v dibibest-data:/data alpine:3.22 sh -ec '
   old="/data/before-restore-$(date -u +%Y%m%dT%H%M%SZ)"; mkdir "$old"
   for f in /data/dibibest.db /data/dibibest.db-wal /data/dibibest.db-shm; do
     if [ -e "$f" ]; then mv "$f" "$old"/; fi
   done
-  ls -l "$old"'
-# 2. put the chosen backup in place
-docker run --rm -v dibibest-data:/data -v "$PWD/backups":/backup:ro alpine:3.22 sh -ec '
+  ls -l "$old"' \
+&& docker run --rm -v dibibest-data:/data -v "$PWD/backups":/backup:ro alpine:3.22 sh -ec '
   cp /backup/dibibest-20261124T082320Z.db /data/dibibest.db
   chown 10001:10001 /data/dibibest.db
-  ls -l /data/dibibest.db'
-docker compose start dibibest
-docker compose exec dibibest wget -qO- http://127.0.0.1:8080/readyz
+  ls -l /data/dibibest.db' \
+&& docker compose start dibibest \
+&& docker compose exec dibibest wget -qO- http://127.0.0.1:8080/readyz
 ```
+
+If a step fails, the server is still stopped and the old database is where the first step left it (in the
+`before-restore-<time>` directory if that step ran): move it back and start the server.
 
 The compose file names the volume `dibibest-data` explicitly, so these commands mount the volume the service uses. Each
 restore keeps its own `before-restore-<time>` directory on the volume; delete them when you no longer need them.
