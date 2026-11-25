@@ -1,6 +1,11 @@
 # Spike: server-ordered live text editing (issue #88, DIB-10)
 
-Status: spike, written 2026-11-25. Nothing here merges as is. The code is on the branch `test/live-editing-spike` (not merged, no pull request): `crates/dibibest-server/src/live.rs`
+Status: spike, written 2026-11-25. Nothing here merges as is. **The spike code must never be mounted in a deployed server:** it has no
+authentication (the actor is a query or body field and the route picks whether it is a person or an agent), creates rooms and projects
+on first use without a limit, and its per-connection queue caps frames and bytes for durable and presence frames but not for the
+server's own control frames (a client that floods bad frames makes the server queue a rejection for each one). All of that is listed
+under "What the real build still needs"; it is repeated here because the routes are mounted by `live::routes()` on that branch. The code is on the branch `test/live-editing-spike` at commit `ead96c1` (not merged, no pull request; the stages mentioned below are
+those of epic #84): `crates/dibibest-server/src/live.rs`
 and `src/live/{text,frames,gate,room}.rs`, tests in `crates/dibibest-server/tests/live_spike.rs` (plus unit tests in
 `live/text.rs` and `live/room.rs`).
 
@@ -47,7 +52,7 @@ current text of <https://codemirror.net/examples/collab/> and the `@codemirror/c
 - `rebaseUpdates` also drops updates that were already accepted. That is CM's own dedupe; here the idempotency key does it.
 
 So: the room rebases (the same retain/delete/insert transform as the client's), and rejects only outside the replay window. It
-costs one transform per op accepted since the base (measured: nothing visible, see below) and avoids the starvation the docs warn about.
+costs one transform per op accepted since the base (**not isolated by any measurement**: see Measurements) and avoids the starvation the docs warn about.
 The test client implements the client half (`Client::apply`: transform pending changes over a received op) and the room and the
 client reach the same text at every version, which is the property that matters.
 
@@ -83,7 +88,7 @@ parsed in the gate (the closure that builds the string is not called), so typing
 Machine: macOS (Darwin 25.5), Apple silicon, loopback, one SQLite file in a tempdir with the real store (WAL, `synchronous=FULL`),
 release build unless noted. Single runs; read them as orders of magnitude.
 
-**Slow client** (120 changes, each replaces the whole text with ~480 KB of JSON, so ~57 MB went through the room; the room's queue per
+**Slow client** (120 changes, each replaces the whole text with about 240 KB of JSON, so about 29 MB were submitted to the room, and the same again went out to each reader; the test prints 480 because it counts UTF-16 bytes; the room's queue per
 client is 64 frames / 1 MiB; the stuck client connected, read its hello and then stopped reading; a second reader reads normally).
 Latency is what the writer measured from sending a change to its ack:
 
@@ -102,22 +107,27 @@ reader that read was never given a resync. The room never waited on a socket: it
 **Throughput of one room** (small appends, each client sends one change and waits for its ack before the next; the store's
 `append` is awaited by the actor, one at a time):
 
-| clients | release | debug |
-|---|---|---|
-| 1 | 7.3k ops/s (ack p50 104 µs, p99 350 µs) | 4.3k ops/s |
-| 4 | 6.5k ops/s (p50 0.43 ms, p99 3.95 ms) | 3.6k ops/s |
-| 16 | 5.8k ops/s (p50 2.2 ms, p99 7.7 ms) | 3.2k ops/s |
+| clients | release, run A (the author's) | release, re-run by the reviewer | debug |
+|---|---|---|---|
+| 1 | 7.3k ops/s (ack p50 104 µs, p99 350 µs) | 6.3k ops/s (p50 121 µs, p99 506 µs) | 4.3k ops/s |
+| 4 | 6.5k ops/s (p50 0.43 ms, p99 3.95 ms) | 5.2k ops/s (p50 0.39 ms, p99 6.9 ms) | 3.6k ops/s |
+| 16 | 5.8k ops/s (p50 2.2 ms, p99 7.7 ms) | 6.3k ops/s (p50 2.1 ms, p99 5.2 ms) | 3.2k ops/s |
+
+The two runs differ by up to about 20% and do not agree on the order across client counts: read it as "5 to 7 thousand per second on this
+machine", nothing finer.
 
 **Treat this as an upper bound.** macOS `fsync` does not flush the disk's cache (SQLite only asks for that with `PRAGMA fullfsync`),
 so the 100 µs ack includes almost no real sync cost. On the VPS an `fsync` will be 0.2 to 5 ms, and the actor does one per change, so
-expect roughly 200 to 5000 ops/s per room there. It is still far above what people type (a few changes a second per person, and the
+the ceiling per room is about 1 / (the fsync time): 200 ops/s at 5 ms, 1000 at 1 ms. The disk is not known; this is arithmetic, not a measurement. It is still far above what people type (a few changes a second per person, and the
 browser should compose bursts into one submit), but it is the number to measure on the target disk before relying on it.
-Rebase cost did not show up: 484 of 600 changes were rebased over up to 13 ops and throughput was the same as without.
+Rebase cost was **not isolated**: the 484 of 600 rebased changes come from the correctness test, which is not timed, and the throughput test has no run at depth 0 against depth k. Throughput falls about 20% between 1 and 16 clients in run A (and not in the re-run); nothing here says how much of that is rebasing.
 
 **Memory** (release, RSS from `ps`): 2000 empty rooms cost 12.2 MB, **about 6 KB per room** (task, channel, maps; not the text). One
-room with a 10 KB text and a window of 1000 ops costs about 1 MB more, **about 1 KB per op kept** in the window (the retain/delete/insert
-form, the key, the actor). The default window is 4096 ops, so a busy room is a few MB. The spike has no idle eviction, so every room ever
-opened stays.
+room with a 10 KB text and a window of 1000 ops costs about 1.1 MB more. That is about 1 KB per op **for ops that insert ten bytes**, and
+the delta also includes the store's page cache, the WAL and allocator slack, so read it as an upper bound for tiny edits. The window is
+bounded by op count (default 4096), **not by bytes**, and a kept op holds its inserted text: a window of agent-style whole-region
+replacements of about 240 KB each is hundreds of megabytes (4096 of them at the 1 MiB message limit would be 4 GiB). The real build needs
+a byte bound on the window next to the count. The spike has no idle eviction, so every room ever opened stays.
 
 **Shutdown with an open socket:** `serve_until` returned after about 100 µs, with the connection still open: the upgraded session
 is a detached task and nothing tracks it (the client's socket was still open 2 s later, and the task keeps the room and the store
@@ -141,6 +151,21 @@ alive). That is the gap the `UpgradeSlot` work in `src/lib.rs` is for; I did not
   After a reconnect the sender sees its own op in the replay, which must also confirm it (matched by key). Both are in the client, and
   both are easy to get wrong; the test client's strict "each durable frame is the next number" assertion found no violation, but it
   is the first thing a real client needs a test for.
+- **A resync can orphan an in-flight submit (found by review, not by a test).** A resync tells the client to drop what it had not had
+  confirmed, but the room never learns that a key was dropped. If a submit is already in the room's channel when the slow client's
+  resync is processed (a stuck reader that also types), the room accepts it later and sends only an `ack`, for a key the client has
+  forgotten; the test client ignores it as "a repeated ack", so the change never reaches the client, its version lags the log by one,
+  and the next `op` trips the "no gap" check. No test has a client that both overflows and has a submit in flight. Fix for the real
+  build: confirm the author by a normal `op` carrying the key (as the replay path already does) and drop the special `ack`, or treat an
+  `ack` or `op` with a key the client does not know as a forced resync; and add that test.
+- **The room's key index ignores who sent the key.** A key still in the window is answered with the old `ack` and nothing is written,
+  whatever the actor or the content: two connections that build keys the same way (`name-counter`, restarting at 1 after a reload)
+  can get another author's `seq` back for a change that was never applied. The store would answer `KeyConflict` for that; the room never
+  does. Real build: remember (actor, hash of the submission) with the key and answer `key_conflict` when they differ, and require a random
+  per-connection part in the key.
+- **Presence limits are by frames only.** An ephemeral frame is dropped when the queue is more than half full by *frame count*, but it
+  still adds its bytes: enough presence frames can fill the byte budget, and the next durable frame then causes a resync. Real build:
+  drop an ephemeral frame that would take the queue past half of the byte limit too.
 - **Positions are UTF-16 units** because that is what CodeMirror and `String.length` use. The Rust text is `Vec<u16>`. A change that
   splits a surrogate pair would produce invalid UTF-16; the spike does not check for it (`from_utf16_lossy` hides it).
 - **One change in flight per client.** The test client sends the first pending change and waits for its ack. CodeMirror's
@@ -149,6 +174,9 @@ alive). That is the gap the `UpgradeSlot` work in `src/lib.rs` is for; I did not
 - **Rebuilding a room replays the log from 1** (no snapshots) and the text is cloned on every op (`Op::apply` builds a new `Vec<u16>`,
   and the gate gets a `String` only for agents). Fine for schema-sized text (a few KB to a few hundred KB); a 1 MB text under typing would be
   O(n) per keystroke. The size limit exists partly for that.
+- **The gate parses inside the room task.** An agent change is parsed with `dibibest-core` synchronously in the room's actor, so a large
+  agent change stalls every editor of that room while it parses (not measured). Real build: parse on a blocking thread before the room
+  takes the change, and re-check the base.
 - **An agent is blocked while a person leaves the text broken.** The gate parses the *result*, so while the text does not parse, any agent
   change that does not itself repair it is refused. That may be right (an agent should not build on broken text) but it will surprise
   someone; Stage 4's suggestion mode is the natural place to hold such a change instead of refusing it.
@@ -268,46 +296,71 @@ CodeMirror 6 with `@codemirror/collab`: `collab({ startVersion, clientID })` plu
 updates and the synced version; the protocol maps onto it like this:
 
 ```ts
+// state of the client loop
+const keys = new WeakMap<object, string>()   // the key of each unconfirmed update: made once, so a resend repeats it
+let inflight: string | null = null           // the key of the submit on the wire, if any
+
+function firstPending() { const [u] = sendableUpdates(view.state); return u }
+
 // connect
 const ws = new WebSocket(`/v1/live/${project}?since_seq=${getSyncedVersion(view.state)}`)  // omit on the first connect
+ws.onclose = () => { inflight = null }       // reconnect, read hello and the replay, then push() repeats the same key
 
 ws.onmessage = (e) => {
   const f = JSON.parse(e.data)
   switch (f.type) {
-    case 'hello':   // text !== null: build the editor with doc=f.text and collab({startVersion: f.seq})
+    case 'hello':   // text !== null: rebuild the editor from f.text at f.seq
                     // text === null: keep the editor; the missed ops follow
+      if (f.text !== null) rebuild(f.text, f.seq)
+      push()
       break
     case 'op': {    // someone else's change, or our own seen again in a replay (same key)
-      const own = pendingKeys.has(f.key)              // key -> the update we sent
       const changes = ChangeSet.of(f.changes.map(([from, to, insert]) => ({ from, to, insert })), f.len)
-      view.dispatch(receiveUpdates(view.state, [{ changes, clientID: own ? myId : f.actor }]))
-      if (own) pendingKeys.delete(f.key)
+      const u = firstPending()
+      if (u && keys.get(u) === f.key) confirmed(f.key)               // our own change, replayed
+      else view.dispatch(receiveUpdates(view.state, [{ changes, clientID: f.actor }]))
       break
     }
-    case 'ack': {   // our change is number f.seq; CM confirms by clientID, so hand it back as ours
-      const u = sendableUpdates(view.state)[0]        // the one in flight
-      view.dispatch(receiveUpdates(view.state, [{ changes: u.changes, clientID: myId }]))
-      pendingKeys.delete(f.key); push()
+    case 'ack':     // our change got number f.seq
+      confirmed(f.key)
       break
-    }
-    case 'resync':  // replace the document, reset collab with startVersion f.seq, drop pending (tell the user)
+    case 'resync':  // the document is replaced: pending changes are gone (see below)
+      rebuild(f.text, f.seq)
       break
-    case 'rejected': // too_old -> a resync follows; refused/bad_change -> show the message, drop the change
+    case 'rejected':
+      if (f.code === 'too_old') break      // a resync follows
+      // refused / bad_change: the change cannot go in as it is. Show f.message, then rebuild from the synced text.
+      rebuild(syncedText(), getSyncedVersion(view.state))
       break
     case 'presence': case 'presence_left': /* update the remote cursors layer; ephemeral, no version */ break
   }
 }
 
+// confirmed: only if the first pending update is the one this key was made for, so a repeated or late ack does nothing
+function confirmed(key: string) {
+  const u = firstPending()
+  if (!u || keys.get(u) !== key) return
+  view.dispatch(receiveUpdates(view.state, [{ changes: u.changes, clientID: myId }]))
+  inflight = null
+  push()
+}
+
 // push: one change in flight, on the synced version
 function push() {
-  const [u] = sendableUpdates(view.state)
+  const u = firstPending()
   if (!u || inflight) return
-  const key = `${myId}-${++n}`
-  pendingKeys.set(key, u); inflight = true
-  ws.send(JSON.stringify({ type: 'submit', key, base_seq: getSyncedVersion(view.state),
-                           changes: toTriples(u.changes) }))
+  let key = keys.get(u)
+  if (!key) { key = `${myId}-${crypto.randomUUID()}`; keys.set(u, key) }
+  inflight = key
+  ws.send(JSON.stringify({ type: 'submit', key, base_seq: getSyncedVersion(view.state), changes: toTriples(u.changes) }))
 }
-// view plugin: update(u) { if (u.docChanged) push() }; on ws open, push() again (the same key for a change still pending)
+// view plugin: update(u) { if (u.docChanged) push() }
+
+// `@codemirror/collab` has no call that drops one unconfirmed update. A resync or a refusal means rebuilding the editor
+// state: a new EditorState with the synced document and a fresh `collab({startVersion})`, with `keys` and `inflight` reset.
+// What the person typed and had not had confirmed is lost unless the UI keeps it: compare the old text with the new document
+// and offer to re-apply the difference as a new change (a design question for the UI, not solved here).
+function rebuild(text: string, seq: number) { /* view.setState(EditorState.create({ doc: text, extensions: [..., collab({ startVersion: seq, clientID: myId })] })); keys = new WeakMap(); inflight = null */ }
 ```
 
 Notes: (1) `ChangeSet.of` needs the length of the document the change applies to; the spike's `op` has no `len`, which I would add. (2) CM's
@@ -316,9 +369,11 @@ unconfirmed updates, so the browser never needs its own transform; the Rust `tra
 (4) The tie rule must be the same in both: CM's `rebaseUpdates` maps the late change over the accepted ones with the accepted ones first,
 which is what `transform(accepted, late)` does here, but I have **not** run CodeMirror against this server; the first real task is a
 conformance test that feeds random concurrent changes to both implementations and compares texts. (5) Reconnect keeps the editor state
-(unconfirmed updates stay in `collab`'s state), reconnects with `since_seq = getSyncedVersion`, and resubmits the pending change with the same key after the
+(unconfirmed updates stay in `collab`'s state), reconnects with `since_seq = getSyncedVersion`, and resubmits the pending change with the same key (kept in `keys`) after the
 `hello` and the replay have been read. (6) A format/prettify assist that rewrites the whole text becomes one change per differing line
-(the issue says "per-line edits"), which transforms well.
+(the issue says "per-line edits"), which transforms well. (7) I could not check `receiveUpdates`, `sendableUpdates`,
+`getSyncedVersion` and `rebaseUpdates` against the library source: the review that checked `ChangeSet.of(specs, length)` and the tie rule
+had `@codemirror/state` but not `@codemirror/collab`. This sketch is a design, not a tested client.
 
 ## Risks
 
@@ -328,12 +383,17 @@ conformance test that feeds random concurrent changes to both implementations an
 - **One fsync per change per room** until the store can be pipelined; real-disk numbers are not known (see Measurements).
 - **Whole-text resync is the only recovery.** Fine at schema sizes; a project near the 1 MiB limit makes each resync expensive and each slow client a cost.
 - **Agents versus a person who leaves the text broken** (see above): a product decision for Stage 4, not a technical risk.
-- **Memory is per room and unbounded without eviction;** small (6 KB + 1 KB/op in window), but unbounded.
+- **Memory is per room and unbounded without eviction and without a byte bound on the window:** small for tiny edits (6 KB + about 1 KB per ten-byte op), large for big replacements (see Measurements).
 - **One process** is by design; a room is therefore a single point of ordering and of failure for its project. The log makes restart cheap (measured: restart test), a deploy drops the sockets, and clients must reconnect with `since_seq`.
 
 ## What the spike did not test
 
 - Anything with a real browser, CodeMirror or JavaScript; the sketch above is unrun.
+- A client that both overflows its queue (so gets a resync) and has a submit in flight (see "A resync can orphan an in-flight submit").
+- A reconnect with an unconfirmed change while other clients' ops sit between it and the replay (the one reconnect-with-pending test has no other edits around it).
+- An agent change that has to be rebased over concurrent human edits, with the gate seeing the rebased result (the REST-like test always uses the current `seq`).
+- The tie order at room level (`a_change_made_on_an_old_version_is_rebased_by_the_room` accepts either order; only the unit test in `text.rs` pins it), and that a retried key is answered with an `ack` carrying the old `seq` (the test checks that the log did not grow).
+- The cost of parsing a large agent change inside the room task.
 - Linux, a real disk, or a VPS; `fsync` cost; more than ~16 concurrent clients; more than one hot room; a room under memory pressure.
 - Long runs, many reconnects, half-open connections, ping/pong deadlines, TLS and a reverse proxy in front of the WebSocket (idle timeouts of the proxy).
 - Authentication, roles, per-project quotas, MCP.
@@ -342,6 +402,7 @@ conformance test that feeds random concurrent changes to both implementations an
 - Surrogate pairs split by a change; texts of 100 KB or more under typing; deletions in the concurrent marker test (they are in the
   convergence test, which only checks that the texts are equal, not that deletes did what the user meant).
 - `since_seq` replay between `queue_frames / 2` and the window (that range is served as a resync by design, tested at the edges only).
+- The room's key index against a key collision between two authors.
 - The interplay with `UpgradeSlot` (#116, merged after the spike was written): the spike's handler does not use it.
 - The idempotency path through the store's own dedupe (a `duplicate: true` from `append`); the room's key index answers first, and the room treats a store duplicate as an internal error.
 
@@ -349,8 +410,9 @@ conformance test that feeds random concurrent changes to both implementations an
 
 **Go, with changes.** Server-ordered text with a client-side rebase gave two concurrent writers an identical, complete text through
 hundreds of interleaved changes (484 of 600 rebased by the room), survived reconnect, restart and a stuck reader without any CRDT in the
-bundle, and is small enough to read in an afternoon: a CRDT would add a client dependency and a second source of order next to the log
-that the gate, the agent path and the version history already need. The changes: give the store a non-blocking or batched append and a
+bundle, and is small enough to read in an afternoon: the author's reason for not trying a CRDT is that it would add a client dependency and, if it
+is the source of truth, a second order next to the log that the gate, the agent path and the version history already need (a CRDT used
+only as a relay would not; none was built or measured here). The changes: give the store a non-blocking or batched append and a
 key-only idempotency mode (otherwise rebase and the store's dedupe fight, and one fsync per change caps a room), add `len` and batched
 `submit` to the protocol, and prove tie-rule parity with CodeMirror's `ChangeSet` before any UI is built. Do not decide on throughput
 from this spike: measure on the VPS disk first.
