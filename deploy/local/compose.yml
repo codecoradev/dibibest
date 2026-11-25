@@ -1,0 +1,80 @@
+# LOCAL DEPLOY REHEARSAL: the production shape on one machine, to be run and tested before the VPS.
+#
+#   Traefik (port 8088)  ->  dibibest (the image built from the root Dockerfile, one container, named volume,
+#                            a host directory for backups)       <-  a fake identity provider in the same network
+#
+#   deploy/local/run.sh          build, start, run the end-to-end checks (deploy/local/e2e.sh), stop
+#
+# It differs from docker-compose.yml (the VPS example) on purpose, and only here: Traefik is configured from a file
+# instead of Docker labels; the volume has its own name; there is no `env_file` and no `restart:` policy; the fake
+# identity provider shares the dibibest container's network; ports are published on 127.0.0.1. The image, the
+# volume mount at /data, the backup mount at /backup, the user, the health check (from the image) and the variables
+# below are the production ones.
+#
+# Everything in `environment:` below is a made-up local value. None of it is a secret and none of it works anywhere
+# else. The real values go in the `.env` of the VPS (docs/deploy.md).
+
+name: dibibest-local
+
+services:
+  traefik:
+    image: traefik:v3.2
+    command:
+      - --entrypoints.web.address=:80
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+      - --accesslog=true
+      - --log.level=INFO
+    ports:
+      - "127.0.0.1:8088:80"
+    volumes:
+      - ./traefik-dynamic.yml:/etc/traefik/dynamic.yml:ro
+    networks: [edge]
+    depends_on: [dibibest]
+
+  dibibest:
+    build:
+      context: ../..
+    image: dibibest:local
+    container_name: dibibest-local
+    stop_grace_period: 30s
+    environment:
+      # the address people use, as the VPS has `https://dibibest.codecora.dev`; http is allowed for localhost only
+      DIBIBEST_PUBLIC_URL: http://localhost:8088
+      # sign-in and the MCP endpoint against the fake identity provider below (it answers on localhost:9000 inside
+      # this container's network, and on the host through the port published here)
+      DIBIBEST_OIDC_ISSUER: http://localhost:9000/api/auth
+      DIBIBEST_OIDC_CLIENT_ID: local-client
+      DIBIBEST_OIDC_CLIENT_SECRET: local-client-secret
+      DIBIBEST_SESSION_SECRET: local-rehearsal-session-secret-not-a-secret
+      # one proxy (Traefik) in front, as on the VPS minus Cloudflare
+      DIBIBEST_TRUSTED_PROXIES: "1"
+      DIBIBEST_RATE_PER_MINUTE: "300"
+      DIBIBEST_BACKUP_DIR: /backup
+      DIBIBEST_BACKUP_INTERVAL_HOURS: "24"
+      DIBIBEST_BACKUP_KEEP: "7"
+    volumes:
+      - dibibest-data:/data
+      - ./backups:/backup
+    ports:
+      - "127.0.0.1:9000:9000" # the fake identity provider shares this container's network
+    networks: [edge]
+
+  idp:
+    image: node:22-alpine
+    network_mode: "service:dibibest"
+    command: ["node", "/idp.mjs"]
+    environment:
+      # the same issuer, client id and client secret that the dibibest service is given above
+      IDP_ISSUER: http://localhost:9000/api/auth
+      IDP_CLIENT_ID: local-client
+      IDP_CLIENT_SECRET: local-client-secret
+    volumes:
+      - ./idp.mjs:/idp.mjs:ro
+    depends_on: [dibibest]
+
+volumes:
+  dibibest-data:
+    name: dibibest-local-data
+
+networks:
+  edge:
