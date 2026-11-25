@@ -131,6 +131,10 @@ fn backups(dir: &Path) -> Vec<(i64, PathBuf)> {
     entries
         .filter_map(Result::ok)
         .filter_map(|e| {
+            // a directory (or anything else) that merely has such a name is not a backup
+            if !e.file_type().is_ok_and(|t| t.is_file()) {
+                return None;
+            }
             let t = parse_file_name(&e.file_name().to_string_lossy())?;
             Some((t, e.path()))
         })
@@ -142,14 +146,23 @@ pub fn newest_backup(dir: &Path) -> Option<i64> {
     backups(dir).into_iter().map(|(t, _)| t).max()
 }
 
-/// Deletes all but the newest `keep` backups. Files that are not backups are never touched.
-pub fn prune(dir: &Path, keep: usize) -> std::io::Result<()> {
+/// Deletes all but the newest `keep` backups, and never `protect` (the one that has just been made). Files that are
+/// not backups are never touched. If the clock was stepped back, the backup just made can be older by name than
+/// others; it is kept anyway, and the directory holds one more until the clock catches up.
+pub fn prune(dir: &Path, keep: usize, protect: Option<&Path>) -> std::io::Result<()> {
     let mut all = backups(dir);
     all.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
+    let mut first_error = None;
     for (_, path) in all.into_iter().skip(keep) {
-        std::fs::remove_file(path)?;
+        if Some(path.as_path()) == protect {
+            continue;
+        }
+        // one file that cannot be removed must not keep the others from being removed
+        if let Err(e) = std::fs::remove_file(&path) {
+            first_error.get_or_insert(e);
+        }
     }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
 }
 
 fn remove_partials(dir: &Path) {
@@ -204,7 +217,7 @@ pub fn run_once(
     std::fs::rename(&partial, &final_path)
         .map_err(io(format!("cannot rename {}", partial.display())))?;
     let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
-    if let Err(e) = prune(dir, keep) {
+    if let Err(e) = prune(dir, keep, Some(&final_path)) {
         // the backup itself is fine; old ones are left for the next run
         tracing::warn!(
             "backup: could not remove old backups in {}: {e}",
@@ -215,6 +228,12 @@ pub fn run_once(
 }
 
 // ---- the scheduler ----------------------------------------------------------------------------------------
+
+/// A Unix time from before 2020 means the clock was never set (or reads as 0): a backup named for it would be
+/// filed under 1970 and sorted as the oldest.
+pub fn plausible_clock(unix_secs: i64) -> bool {
+    unix_secs >= 1_577_836_800
+}
 
 fn now_unix() -> i64 {
     SystemTime::now()
@@ -234,14 +253,26 @@ fn first_wait(cfg: &BackupConfig) -> Duration {
 
 /// A running scheduler. [`Backup::stop`] ends it, after the backup it is in the middle of.
 pub struct Backup {
-    stop: watch::Sender<bool>,
+    stop: Arc<watch::Sender<bool>>,
     task: JoinHandle<()>,
 }
 
 impl Backup {
+    /// What tells the scheduler to stop. The server holds a copy so it can say so the moment a shutdown begins,
+    /// while it is still waiting for requests, instead of after.
+    pub fn stop_signal(&self) -> Arc<watch::Sender<bool>> {
+        self.stop.clone()
+    }
+
+    /// Waits for the scheduler to end, which includes the backup it is in the middle of.
+    pub async fn join(self) {
+        let _ = self.task.await;
+    }
+
+    /// Tells the scheduler to stop and waits for it.
     pub async fn stop(self) {
         let _ = self.stop.send(true);
-        let _ = self.task.await;
+        self.join().await;
     }
 }
 
@@ -249,6 +280,7 @@ impl Backup {
 /// backup is logged and tried again after `retry`.
 pub fn spawn(store: Arc<SqliteStore>, cfg: BackupConfig) -> Backup {
     let (stop, mut stopped) = watch::channel(false);
+    let stop = Arc::new(stop);
     let task = tokio::spawn(async move {
         let mut wait = first_wait(&cfg);
         loop {
@@ -257,9 +289,15 @@ pub fn spawn(store: Arc<SqliteStore>, cfg: BackupConfig) -> Backup {
                 // a stop, or the sender gone
                 _ = stopped.changed() => return,
             }
+            let now = now_unix();
+            if !plausible_clock(now) {
+                tracing::error!("backup skipped: the clock reads {now}, which is not a real time; trying again soon");
+                wait = cfg.retry;
+                continue;
+            }
             let (s, c) = (store.clone(), cfg.clone());
             let result =
-                tokio::task::spawn_blocking(move || run_once(&s, &c.dir, now_unix(), c.keep)).await;
+                tokio::task::spawn_blocking(move || run_once(&s, &c.dir, now, c.keep)).await;
             wait = match result {
                 Ok(Ok(path)) => {
                     tracing::info!("backup written: {}", path.display());

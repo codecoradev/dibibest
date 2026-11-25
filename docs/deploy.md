@@ -12,8 +12,11 @@ Run for real on 2026-11-24 (OrbStack, Docker 29, linux/arm64): the clean build, 
 volume (refused), restart on the same volume after `docker rm`, the non-root user, the health check, `docker compose
 config`, `up` and `down`, and a restore of a cold copy of the volume (see Rollback).
 
-**Not run:** the linux/amd64 build (the VPS is probably amd64; the Dockerfile has the amd64 bun checksum but the
-architecture was not built), Traefik and Cloudflare in front, sign-in against Gatehouse, and any request with a real
+Run for real on 2026-11-25 (the same machine): the scheduled backup (the first one at once, none extra after a restart, the
+server refusing to start when the backup directory is read-only) and the restore commands under Backups, copied from this
+file. The image was also **built** for `linux/amd64` (not run on an amd64 host).
+
+**Not run:** the image on an amd64 host (the VPS is probably amd64), Traefik and Cloudflare in front, sign-in against Gatehouse, and any request with a real
 project (the API for projects does not exist yet).
 
 ## Base image
@@ -181,22 +184,32 @@ would miss what is still in the `-wal` file.
 
 ### Restore
 
-A backup file is a complete database. To use one, stop the server, replace the database, start it again:
+A backup file is a complete database. To use one, stop the server, move the current database aside, put the backup in
+its place, start the server again. Replace the file name in the second command with the backup you want (`ls backups`).
 
 ```sh
 docker compose stop dibibest
-# keep what is there, in case the restore was the wrong move
-docker run --rm -v dibibest-data:/data alpine:3.22 sh -c 'mkdir -p /data/old && mv /data/dibibest.db* /data/old/ 2>/dev/null; true'
-# put the chosen backup in place (the -wal and -shm files of the old database are gone with the move)
-docker run --rm -v dibibest-data:/data -v "$PWD/backups":/backup:ro alpine:3.22 \
-  sh -c 'cp /backup/dibibest-20261124T082320Z.db /data/dibibest.db && chown 10001:10001 /data/dibibest.db'
+# 1. move the current database, with its -wal and -shm files, into a new directory on the volume (nothing is
+#    deleted, and a failing step stops here instead of leaving a stale -wal beside the restored database)
+docker run --rm -v dibibest-data:/data alpine:3.22 sh -ec '
+  old="/data/before-restore-$(date -u +%Y%m%dT%H%M%SZ)"; mkdir "$old"
+  for f in /data/dibibest.db /data/dibibest.db-wal /data/dibibest.db-shm; do
+    if [ -e "$f" ]; then mv "$f" "$old"/; fi
+  done
+  ls -l "$old"'
+# 2. put the chosen backup in place
+docker run --rm -v dibibest-data:/data -v "$PWD/backups":/backup:ro alpine:3.22 sh -ec '
+  cp /backup/dibibest-20261124T082320Z.db /data/dibibest.db
+  chown 10001:10001 /data/dibibest.db
+  ls -l /data/dibibest.db'
 docker compose start dibibest
-curl -s http://127.0.0.1:8080/readyz   # from the host, with a port published; or `docker compose exec dibibest wget -qO- ...`
+docker compose exec dibibest wget -qO- http://127.0.0.1:8080/readyz
 ```
 
-The compose file names the volume `dibibest-data` explicitly, so these commands mount the volume the service uses. The
-restore was run once for real (see the top of this page); the content of the restored log was compared in the tests
-(`tests/backup.rs`: the log and the snapshot of a restored copy equal the live ones).
+The compose file names the volume `dibibest-data` explicitly, so these commands mount the volume the service uses. Each
+restore keeps its own `before-restore-<time>` directory on the volume; delete them when you no longer need them.
+The commands above were run as written against a real container (see the top of this page), and `tests/backup.rs`
+compares a restored copy with the live database: the log and the snapshot are equal.
 
 Until the server has a projects API there is little in the database to lose, but the routine is the same one you will
 need later.

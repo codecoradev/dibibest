@@ -4,7 +4,8 @@
 //! Timing is polled against a generous ceiling, never slept for a fixed time and then asserted.
 
 use dibibest_server::backup::{
-    file_name, newest_backup, parse_file_name, prune, run_once, spawn, BackupConfig,
+    file_name, newest_backup, parse_file_name, plausible_clock, prune, run_once, spawn,
+    BackupConfig,
 };
 use dibibest_server::bind;
 use dibibest_server::config::Config;
@@ -234,7 +235,7 @@ fn only_the_newest_few_are_kept_and_foreign_files_are_never_touched() {
     assert!(out.path().join("dibibest.db").exists());
     assert!(out.path().join("dibibest-20000101T000000Z.db.bak").exists());
     // pruning again changes nothing
-    prune(out.path(), 3).unwrap();
+    prune(out.path(), 3, None).unwrap();
     assert_eq!(backups_in(out.path()).len(), 3);
 }
 
@@ -267,7 +268,8 @@ async fn a_recent_backup_means_a_restart_does_not_make_another_at_once() {
     let live = tempfile::tempdir().unwrap();
     let out = tempfile::tempdir().unwrap();
     let store = store_with_log(live.path());
-    let recent = out.path().join(file_name(now()));
+    // one second ago: a backup made at once would be named for now, a different file, and be counted
+    let recent = out.path().join(file_name(now() - 1));
     std::fs::write(&recent, b"made a moment ago").unwrap();
     let backup = spawn(store, config(out.path(), Duration::from_secs(3_600), 5));
     tokio::time::sleep(Duration::from_millis(600)).await;
@@ -434,4 +436,44 @@ async fn without_a_backup_directory_nothing_is_written_beside_the_database() {
     stop.send(()).unwrap();
     task.await.unwrap().unwrap();
     assert!(backups_in(&data).is_empty());
+}
+
+#[test]
+fn the_backup_just_made_is_never_the_one_retention_deletes_even_when_the_clock_went_back() {
+    let live = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let store = store_with_log(live.path());
+    // a backup that is named for a time AFTER the one the next backup gets: the clock was stepped back
+    run_once(&store, out.path(), 5_000_000, 1).unwrap();
+    let made = run_once(&store, out.path(), 3_000_000, 1).unwrap();
+    assert!(
+        made.exists(),
+        "the backup just made must survive its own retention"
+    );
+    assert_eq!(
+        backups_in(out.path()).len(),
+        2,
+        "both are kept rather than losing the new one"
+    );
+}
+
+#[test]
+fn a_directory_that_is_named_like_a_backup_is_not_one() {
+    let live = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let store = store_with_log(live.path());
+    let lookalike = out.path().join(file_name(9_000_000));
+    std::fs::create_dir(&lookalike).unwrap();
+    std::fs::write(lookalike.join("inside"), b"x").unwrap();
+    assert_eq!(newest_backup(out.path()), None);
+    run_once(&store, out.path(), 1_000_000, 1).unwrap();
+    assert!(lookalike.join("inside").exists(), "left alone");
+}
+
+#[test]
+fn a_clock_that_is_not_set_is_not_believed() {
+    assert!(!plausible_clock(0));
+    assert!(!plausible_clock(86_400));
+    assert!(!plausible_clock(-5));
+    assert!(plausible_clock(1_795_508_600));
 }

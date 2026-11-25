@@ -129,6 +129,20 @@ impl Bound {
         // are all gone, and `_lock` is released after that, at the end of this function.
         let (header_timeout, max_connections) = (state.header_timeout, state.max_connections);
         let backup = backup.map(|cfg| backup::spawn(state.store.clone(), cfg));
+        // The scheduler is told to stop when the shutdown begins, not when the requests are done: a backup in the
+        // middle of its work then gets the whole grace period beside them, instead of a second one after them.
+        let signal = backup.as_ref().map(backup::Backup::stop_signal);
+        let begun = Arc::new(std::sync::OnceLock::<std::time::Instant>::new());
+        let shutdown = {
+            let (signal, begun) = (signal.clone(), begun.clone());
+            async move {
+                shutdown.await;
+                let _ = begun.set(std::time::Instant::now());
+                if let Some(signal) = signal {
+                    let _ = signal.send(true);
+                }
+            }
+        };
         let served = serve_until(
             listener,
             router(state),
@@ -139,8 +153,12 @@ impl Bound {
         )
         .await;
         if let Some(backup) = backup {
-            // a backup in the middle of its work is allowed to finish, for as long as requests are
-            if tokio::time::timeout(grace, backup.stop()).await.is_err() {
+            // however serve_until ended, the scheduler must be told
+            if let Some(signal) = signal {
+                let _ = signal.send(true);
+            }
+            let left = grace.saturating_sub(begun.get().map_or(Duration::ZERO, |t| t.elapsed()));
+            if tokio::time::timeout(left, backup.join()).await.is_err() {
                 tracing::warn!("a backup was still running when the grace period ended");
             }
         }
