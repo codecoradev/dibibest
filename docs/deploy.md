@@ -138,8 +138,9 @@ request, and it does not touch the VPS: the VPS pulls by hand.
 - **Public or private package:** a new GHCR package is private. For a private one the VPS needs, once,
   `docker login ghcr.io -u <user>` with a token that can read packages; for a public one it needs nothing. Change it
   under the package's settings on GitHub.
-- **On the VPS, to update:** `docker compose pull && docker compose up -d` (this recreates the container: stop, then
-  start).
+- **On the VPS, to update:** in the compose file replace `build: .` with `image: ghcr.io/codecoradev/dibibest:<tag>` (once;
+  with `build: .` there is nothing to pull), then `docker compose pull && docker compose up -d` (this recreates the
+  container: stop, then start). Every later update changes the tag.
 
 ## Rollback
 
