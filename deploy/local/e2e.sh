@@ -82,7 +82,7 @@ expect_eq "the provider's refusal of a used code is the server's own 502 (as in 
 expect_not_has "the same callback replayed does not set a session" "$REPLAY" "dibibest_session=eyJ"
 expect_eq "...and the replaying browser is not signed in" "$(curl -s -b "$JAR5" "$BASE/auth/me" | jq_ "d['user']")" "None"
 rm -f "$JAR4" "$JAR5"
-code=$(status -X POST -H "Origin: http://evil.test" -b "$JAR" -c "$JAR" "$BASE/auth/logout")
+code=$(status -X POST -H "Origin: https://evil.test" -b "$JAR" -c "$JAR" "$BASE/auth/logout")
 expect_eq "a logout from another origin is refused" "$code" 403
 expect_eq "...and the session stays" "$(curl -s -b "$JAR" "$BASE/auth/me" | jq_ "d['user']['email']")" "rehearsal@example.test"
 code=$(status -X POST -H "Origin: $BASE" -b "$JAR" -c "$JAR" "$BASE/auth/logout")
@@ -99,7 +99,7 @@ postcode() { curl -s -o /dev/null -w '%{http_code}' -X POST "$AUD" -H 'content-t
 CHAL=$(curl -s -D - -o /dev/null -X POST "$AUD" -H 'content-type: application/json' -d '{}' | tr -d '\r' | grep -i '^www-authenticate')
 expect_has "no token: 401 with the resource metadata address" "$CHAL" "resource_metadata=\"$BASE/.well-known/oauth-protected-resource/mcp\""
 expect_eq "a token for another resource is refused" "$(postcode -H "authorization: Bearer $(token "aud=https://evil.example/mcp")" -d '{}')" 401
-expect_eq "a token from another issuer is refused" "$(postcode -H "authorization: Bearer $(token "aud=$AUD&iss=http://evil.example")" -d '{}')" 401
+expect_eq "a token from another issuer is refused" "$(postcode -H "authorization: Bearer $(token "aud=$AUD&iss=https://evil.example")" -d '{}')" 401
 expect_eq "an expired token is refused" "$(postcode -H "authorization: Bearer $(token "aud=$AUD&exp_in=-600")" -d '{}')" 401
 expect_eq "a made-up token is refused" "$(postcode -H 'authorization: Bearer aaa.bbb.ccc' -d '{}')" 401
 INIT=$(post -H 'mcp-protocol-version: 2025-06-18' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"rehearsal","version":"1"}}}')

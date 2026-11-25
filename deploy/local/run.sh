@@ -23,20 +23,26 @@ done
 
 COMPOSE="docker compose -f compose.yml"
 
+# The backup directory is written by the server (uid 10001), which closes it to other users (mode 700) and owns what is
+# in it, so the host user cannot always change or empty it: on Linux that would stop a second run. Root in a throw-away
+# container can, and works the same on Docker Desktop and OrbStack, which map the owner on their own.
+backups() {
+  docker run --rm -v "$PWD/backups":/b alpine:3.22 sh -c "$1"
+}
 mkdir -p backups
-# On Linux the server (uid 10001) must be able to write to the host directory. It closes the directory to others
-# itself once it can (mode 700); Docker Desktop and OrbStack map the owner on their own.
-if [ "$(uname)" = "Linux" ]; then chmod 777 backups; fi
+backups 'chmod 777 /b; rm -f /b/dibibest-*.db /b/dibibest-*.partial'
 
 $COMPOSE down -v --remove-orphans >/dev/null 2>&1 || true
-rm -f backups/dibibest-*.db backups/dibibest-*.partial
 
-# tear down whatever was started, also when something below fails or the run is interrupted (unless --keep)
+# tear down whatever was started, also when something below fails or the run is interrupted (unless --keep); the exit
+# status of the run is the one the script had, whatever the cleanup does
 cleanup() {
+  rc=$?
   if [ "$KEEP" = "0" ]; then
     $COMPOSE down -v --remove-orphans >/dev/null 2>&1 || true
-    rm -f backups/dibibest-*.db backups/dibibest-*.partial
+    backups 'rm -f /b/dibibest-*.db /b/dibibest-*.partial' >/dev/null 2>&1 || true
   fi
+  exit "$rc"
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
