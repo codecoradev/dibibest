@@ -50,6 +50,16 @@ const json = (res, status, obj) => {
 const readBody = (req) => new Promise((ok) => { let s = ''; req.on('data', (c) => (s += c)); req.on('end', () => ok(s)); });
 
 http.createServer(async (req, res) => {
+  try {
+    await handle(req, res);
+  } catch (e) {
+    console.log('bad request:', e.message);
+    if (!res.headersSent) json(res, 400, { error: 'invalid_request' });
+    else res.end();
+  }
+}).listen(PORT, '0.0.0.0', () => console.log(`fake identity provider on :${PORT}, issuer ${ISSUER}`));
+
+async function handle(req, res) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
   console.log(req.method, path);
@@ -115,4 +125,4 @@ http.createServer(async (req, res) => {
   }
 
   json(res, 404, { error: 'not_found' });
-}).listen(PORT, '0.0.0.0', () => console.log(`fake identity provider on :${PORT}, issuer ${ISSUER}`));
+}

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks of the local rehearsal, through Traefik like a client on the internet would (deploy/local/run.sh
 # starts the stack and calls this). Prints one line per check and exits non-zero if any failed.
-#   e2e.sh --fast    skip the waits (the idle-connection check and the rate-limit refill)
+#   e2e.sh --fast    skip the idle-connection check (it waits 3 x 12 s)
 set -u
 cd "$(dirname "$0")"
 
@@ -26,6 +26,10 @@ status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 jq_() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)" 2>/dev/null; }
 # the Location header of a response (headers dumped by curl -D -)
 location() { tr -d '\r' | awk 'tolower($1)=="location:" {print $2}'; }
+# Run a shell snippet inside a throw-away container that has the backup directory at /b (read-only). The directory and
+# the files in it belong to uid 10001 and are closed to other users, so on Linux the host user cannot read them
+# directly; root in a container can.
+in_backups() { docker run --rm -v "$PWD/backups":/b:ro alpine:3.22 sh -c "$1"; }
 
 echo "1. the site through the proxy"
 expect_eq "GET /healthz" "$(status "$BASE/healthz")" 200
@@ -57,18 +61,26 @@ CB2=$(curl -s -o /dev/null -D - "$LOC2" | location | sed 's/state=[^&]*/state=fo
 code=$(status -b "$JAR2" -c "$JAR2" "$CB2")
 case "$code" in 400|403) pass "a forged state is refused ($code)" ;; *) fail "a forged state is refused" "got $code" ;; esac
 expect_eq "...and nobody is signed in" "$(curl -s -b "$JAR2" "$BASE/auth/me" | jq_ "d['user']")" "None"
-# the code is single use: replaying the first callback does not sign in a second browser
-JAR3=$(mktemp)
-curl -s -o /dev/null -b "$JAR3" -c "$JAR3" "$BASE/auth/login" >/dev/null
-code=$(status -b "$JAR3" -c "$JAR3" "$CB")
-expect_eq "a used code cannot be replayed" "$(curl -s -b "$JAR3" "$BASE/auth/me" | jq_ "d['user']")" "None"
+# A code the provider refuses signs nobody in. The jar is copied before the callback, so the replay carries the same
+# handshake cookie and the same state: the server accepts the state and goes on to the exchange, where the provider
+# refuses the used code. (The fake provider makes a code single use, as a real one does.)
+JAR4=$(mktemp); JAR5=$(mktemp)
+LOC4=$(curl -s -o /dev/null -D - -b "$JAR4" -c "$JAR4" "$BASE/auth/login" | location)
+CB4=$(curl -s -o /dev/null -D - "$LOC4" | location)
+cp "$JAR4" "$JAR5"
+FIRSTCB=$(curl -s -o /dev/null -D - -b "$JAR4" -c "$JAR4" "$CB4" | tr -d '\r')
+expect_has "the first callback of a code signs in" "$FIRSTCB" "dibibest_session="
+REPLAY=$(curl -s -o /dev/null -D - -b "$JAR5" -c "$JAR5" "$CB4" | tr -d '\r')
+expect_not_has "the same callback replayed does not set a session" "$REPLAY" "dibibest_session=eyJ"
+expect_eq "...and the replaying browser is not signed in" "$(curl -s -b "$JAR5" "$BASE/auth/me" | jq_ "d['user']")" "None"
+rm -f "$JAR4" "$JAR5"
 code=$(status -X POST -H "Origin: http://evil.test" -b "$JAR" -c "$JAR" "$BASE/auth/logout")
 expect_eq "a logout from another origin is refused" "$code" 403
 expect_eq "...and the session stays" "$(curl -s -b "$JAR" "$BASE/auth/me" | jq_ "d['user']['email']")" "rehearsal@example.test"
 code=$(status -X POST -H "Origin: $BASE" -b "$JAR" -c "$JAR" "$BASE/auth/logout")
 expect_eq "logout from the site redirects (303)" "$code" 303
 expect_eq "...ends the session" "$(curl -s -b "$JAR" -c "$JAR" "$BASE/auth/me" | jq_ "d['user']")" "None"
-rm -f "$JAR" "$JAR2" "$JAR3"
+rm -f "$JAR" "$JAR2"
 
 echo "3. the MCP endpoint with real tokens"
 AUD="$BASE/mcp"
@@ -131,22 +143,39 @@ codes=$(seq 1 150 | xargs -P 30 -I{} curl -s -o /dev/null -w '%{http_code}\n' "$
 expect_eq "150 parallel requests inside the budget all succeed" "$codes" " 150 200;"
 codes=$(seq 1 500 | xargs -P 30 -I{} curl -s -o /dev/null -w '%{http_code}\n' "$BASE/" | sort | uniq -c | tr -s ' ' | tr '\n' ';')
 expect_has "past the budget requests get 429" "$codes" "429"
-expect_eq "a client that writes its own X-Forwarded-For is limited all the same" "$(status -H 'X-Forwarded-For: 9.9.9.9' "$BASE/")" 429
+# the bucket refills 5 tokens a second, so one request right after the burst could find a token by luck; thirty at
+# once cannot all do so. If the made-up address gave a fresh budget, all thirty would pass.
+SPOOF=$(seq 1 30 | xargs -P 30 -I{} curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Forwarded-For: 9.9.9.9' "$BASE/" | grep -c 429 || true)
+if [ "$SPOOF" -ge 20 ]; then pass "a client that writes its own X-Forwarded-For is limited all the same ($SPOOF of 30 refused)"; else fail "a client that writes its own X-Forwarded-For is limited all the same" "only $SPOOF of 30 refused"; fi
 expect_eq "the probes are not limited" "$(status "$BASE/healthz")" 200
 
 echo "6. the backup"
-FIRST=$(ls backups 2>/dev/null | grep '^dibibest-.*Z\.db$' | head -1)
-if [ -n "$FIRST" ]; then pass "a backup was made at start: $FIRST"; else fail "a backup was made at start" "$(ls -la backups)"; fi
-expect_eq "it is a SQLite database" "$(head -c 15 "backups/$FIRST" 2>/dev/null)" "SQLite format 3"
-MODE=$(python3 -c "import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o077))" "backups/$FIRST" 2>/dev/null)
-expect_eq "it is not readable by others" "$MODE" "0o0"
-expect_eq "no half-written copy is left" "$(ls backups | grep -c '\.partial$' || true)" 0
+LISTING=$(in_backups 'ls /b' 2>&1); LISTED=$?
+if [ "$LISTED" -eq 0 ]; then pass "the backup directory can be listed"; else fail "the backup directory can be listed" "$LISTING"; fi
+FIRST=$(echo "$LISTING" | grep '^dibibest-.*Z\.db$' | head -1)
+if [ -n "$FIRST" ]; then pass "a backup was made at start: $FIRST"; else fail "a backup was made at start" "$LISTING"; fi
+expect_eq "it is a SQLite database" "$(in_backups "head -c 15 /b/$FIRST" 2>/dev/null)" "SQLite format 3"
+expect_eq "it is readable by its owner only (mode 600)" "$(in_backups "stat -c %a /b/$FIRST" 2>/dev/null)" 600
+expect_eq "no half-written copy is left" "$(echo "$LISTING" | grep -c '\.partial$' || true)" 0
 
 echo "7. the container"
 expect_eq "it runs as the unprivileged user" "$(docker exec "$CONTAINER" id -u)" 10001
-expect_eq "its health check passes" "$(docker inspect -f '{{.State.Health.Status}}' "$CONTAINER")" healthy
-LOCK=$(docker run --rm -v dibibest-local-data:/data dibibest:local 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
-expect_has "a second container on the same volume is refused" "$LOCK" "already using"
+HEALTH=starting
+for _ in $(seq 1 40); do
+  HEALTH=$(docker inspect -f '{{.State.Health.Status}}' "$CONTAINER")
+  [ "$HEALTH" = healthy ] && break
+  sleep 1
+done
+expect_eq "its health check passes" "$HEALTH" healthy
+CID=$(docker run -d -v dibibest-local-data:/data dibibest:local)
+for _ in $(seq 1 20); do
+  [ "$(docker inspect -f '{{.State.Running}}' "$CID")" = false ] && break
+  sleep 1
+done
+LOCK=$(docker logs "$CID" 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+expect_eq "a second container on the same volume has stopped (it did not hang)" "$(docker inspect -f '{{.State.Running}}' "$CID")" false
+expect_has "...because the data directory is in use" "$LOCK" "already using"
+docker rm -f "$CID" >/dev/null 2>&1
 
 echo "8. shutdown and restore"
 T0=$(date +%s)
@@ -156,7 +185,7 @@ expect_eq "the server exits with 0 on SIGTERM" "$(docker inspect -f '{{.State.Ex
 if [ $((T1 - T0)) -lt 10 ]; then pass "...within $((T1 - T0)) s, well inside the grace period"; else fail "...within the grace period" "took $((T1 - T0)) s"; fi
 expect_has "the log says it stopped" "$(docker logs "$CONTAINER" 2>&1 | sed 's/\x1b\[[0-9;]*m//g')" "stopped"
 # the restore of docs/deploy.md, with this rehearsal's volume name and compose file, as one && chain
-BK=$(ls backups | grep '^dibibest-.*Z\.db$' | head -1)
+BK=$FIRST
 docker run --rm -v dibibest-local-data:/data alpine:3.22 sh -ec '
   old="/data/before-restore-$(date -u +%Y%m%dT%H%M%SZ)"; mkdir "$old"
   for f in /data/dibibest.db /data/dibibest.db-wal /data/dibibest.db-shm; do
@@ -164,7 +193,8 @@ docker run --rm -v dibibest-local-data:/data alpine:3.22 sh -ec '
   done' >/dev/null \
 && docker run --rm -v dibibest-local-data:/data -v "$PWD/backups":/backup:ro alpine:3.22 sh -ec "
   cp /backup/$BK /data/dibibest.db
-  chown 10001:10001 /data/dibibest.db" >/dev/null \
+  chown 10001:10001 /data/dibibest.db
+  cmp /backup/$BK /data/dibibest.db" >/dev/null \
 && $COMPOSE start dibibest >/dev/null 2>&1 \
 && $COMPOSE restart idp >/dev/null 2>&1
 RESTORED=0

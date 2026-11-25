@@ -31,6 +31,16 @@ if [ "$(uname)" = "Linux" ]; then chmod 777 backups; fi
 $COMPOSE down -v --remove-orphans >/dev/null 2>&1 || true
 rm -f backups/dibibest-*.db backups/dibibest-*.partial
 
+# tear down whatever was started, also when something below fails or the run is interrupted (unless --keep)
+cleanup() {
+  if [ "$KEEP" = "0" ]; then
+    $COMPOSE down -v --remove-orphans >/dev/null 2>&1 || true
+    rm -f backups/dibibest-*.db backups/dibibest-*.partial
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
 $COMPOSE up -d --build
 
 printf 'waiting for the stack'
@@ -45,10 +55,7 @@ curl -sf http://localhost:8088/readyz >/dev/null || { echo "the stack did not be
 status=0
 ./e2e.sh $FAST || status=$?
 
-if [ "$KEEP" = "0" ]; then
-  $COMPOSE down -v --remove-orphans >/dev/null 2>&1
-  rm -f backups/dibibest-*.db backups/dibibest-*.partial
-else
+if [ "$KEEP" != "0" ]; then
   echo "left running: http://localhost:8088 (stop it with: docker compose -f deploy/local/compose.yml down -v)"
 fi
 exit $status

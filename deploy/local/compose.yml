@@ -5,6 +5,12 @@
 #
 #   deploy/local/run.sh          build, start, run the end-to-end checks (deploy/local/e2e.sh), stop
 #
+# It differs from docker-compose.yml (the VPS example) on purpose, and only here: Traefik is configured from a file
+# instead of Docker labels; the volume has its own name; there is no `env_file` and no `restart:` policy; the fake
+# identity provider shares the dibibest container's network; ports are published on 127.0.0.1. The image, the
+# volume mount at /data, the backup mount at /backup, the user, the health check (from the image) and the variables
+# below are the production ones.
+#
 # Everything in `environment:` below is a made-up local value. None of it is a secret and none of it works anywhere
 # else. The real values go in the `.env` of the VPS (docs/deploy.md).
 

@@ -26,7 +26,8 @@ internet would reach it:
 
 - **Traefik** on `http://localhost:8088` in front (one proxy, so `DIBIBEST_TRUSTED_PROXIES=1`), routing to
 - **the dibibest container**, built from the root `Dockerfile`, with the named volume `dibibest-local-data`, a host
-  directory `deploy/local/backups` for backups, and the same environment variables as the VPS (made-up values), next to
+  directory `deploy/local/backups` for backups, and the same variables as the VPS (made-up values; the differences from `docker-compose.yml` are listed at the top of
+  `deploy/local/compose.yml`), next to
 - **a fake identity provider** (`deploy/local/idp.mjs`, Node, no dependencies) that speaks just enough OpenID Connect
   for sign-in (discovery, authorization code with PKCE, token, userinfo, keys) and hands out ES256 access tokens for the
   MCP endpoint. It is not Gatehouse and proves nothing about Gatehouse.
