@@ -6,6 +6,7 @@
 
 pub mod app;
 pub mod auth;
+pub mod backup;
 pub mod config;
 pub mod limit;
 pub mod live;
@@ -69,6 +70,8 @@ pub enum ServerError {
     Store(#[from] StoreError),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    #[error("backup directory: {0}")]
+    Backup(#[from] backup::BackupError),
 }
 
 /// A server that has everything it needs and is not serving yet.
@@ -76,6 +79,7 @@ pub struct Bound {
     listener: TcpListener,
     state: AppState,
     grace: Duration,
+    backup: Option<backup::BackupConfig>,
     // Declared last so it is released last, after the store has flushed.
     _lock: DataLock,
 }
@@ -85,11 +89,18 @@ pub struct Bound {
 pub async fn bind(config: Config) -> Result<Bound, ServerError> {
     let lock = DataLock::acquire(&config.data_dir)?;
     let store = SqliteStore::open(config.data_dir.join("dibibest.db"))?;
+    // A backup directory that cannot be written to stops the start: a server that looks fine and never backs up
+    // is the worse outcome.
+    let backup = backup::BackupConfig::from_config(&config);
+    if let Some(b) = &backup {
+        backup::check_dir(&b.dir)?;
+    }
     let listener = TcpListener::bind(config.addr).await?;
     Ok(Bound {
         listener,
         state: AppState::new(Arc::new(store), &config),
         grace: config.shutdown_grace,
+        backup,
         _lock: lock,
     })
 }
@@ -111,12 +122,14 @@ impl Bound {
             listener,
             state,
             grace,
+            backup,
             _lock,
         } = self;
-        // Everything that holds the store lives inside `serve_until`; when it returns they are all gone, and
-        // `_lock` is released after that, at the end of this function.
+        // Everything that holds the store lives inside `serve_until` and the backup task; when both are over they
+        // are all gone, and `_lock` is released after that, at the end of this function.
         let (header_timeout, max_connections) = (state.header_timeout, state.max_connections);
-        serve_until(
+        let backup = backup.map(|cfg| backup::spawn(state.store.clone(), cfg));
+        let served = serve_until(
             listener,
             router(state),
             header_timeout,
@@ -124,7 +137,14 @@ impl Bound {
             grace,
             shutdown,
         )
-        .await
+        .await;
+        if let Some(backup) = backup {
+            // a backup in the middle of its work is allowed to finish, for as long as requests are
+            if tokio::time::timeout(grace, backup.stop()).await.is_err() {
+                tracing::warn!("a backup was still running when the grace period ended");
+            }
+        }
+        served
     }
 }
 

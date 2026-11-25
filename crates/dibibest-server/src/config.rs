@@ -83,6 +83,13 @@ pub struct Config {
     pub header_timeout: Duration,
     /// `DIBIBEST_REQUEST_TIMEOUT_SECS`: how long a request may take, body and handler together.
     pub request_timeout: Duration,
+    /// `DIBIBEST_BACKUP_DIR`: where scheduled backups of the database are written. Unset, there are none. Keep it
+    /// off the data volume (a host directory mounted into the container, or another disk).
+    pub backup_dir: Option<PathBuf>,
+    /// `DIBIBEST_BACKUP_INTERVAL_HOURS`: how often (1 to 8760).
+    pub backup_interval: Duration,
+    /// `DIBIBEST_BACKUP_KEEP`: how many backups are kept, the newest (1 to 1000).
+    pub backup_keep: usize,
     /// `DIBIBEST_MAX_CONNECTIONS`: how many connections are served at once. Past it the server stops accepting,
     /// and further connections wait in the queue of the operating system until one closes.
     pub max_connections: usize,
@@ -122,6 +129,9 @@ impl Default for Config {
             header_timeout: Duration::from_secs(120),
             request_timeout: Duration::from_secs(30),
             max_connections: 1024,
+            backup_dir: None,
+            backup_interval: Duration::from_secs(24 * 3_600),
+            backup_keep: 7,
             public_url: None,
             issuer: None,
             oidc: None,
@@ -225,6 +235,27 @@ impl Config {
                 }),
             }
         };
+        let in_range =
+            |var: &'static str, min: u64, max: u64| -> Result<Option<u64>, ConfigError> {
+                match number(var)? {
+                    Some(n) if !(min..=max).contains(&n) => Err(ConfigError {
+                        var,
+                        reason: format!("must be between {min} and {max}"),
+                    }),
+                    other => Ok(other),
+                }
+            };
+        let backup_dir = value("DIBIBEST_BACKUP_DIR").map(|v| PathBuf::from(v.trim()));
+        let backup_hours = in_range("DIBIBEST_BACKUP_INTERVAL_HOURS", 1, 8_760)?;
+        let backup_keep = in_range("DIBIBEST_BACKUP_KEEP", 1, 1_000)?
+            .map(|n| to_usize("DIBIBEST_BACKUP_KEEP", n))
+            .transpose()?;
+        if backup_dir.is_none() && (backup_hours.is_some() || backup_keep.is_some()) {
+            return Err(ConfigError {
+                var: "DIBIBEST_BACKUP_DIR",
+                reason: "needed when DIBIBEST_BACKUP_INTERVAL_HOURS or DIBIBEST_BACKUP_KEEP is set: without a directory there are no backups".into(),
+            });
+        }
         Ok(Self {
             addr: parsed("DIBIBEST_ADDR")?.unwrap_or(d.addr),
             data_dir: value("DIBIBEST_DATA_DIR").map_or(d.data_dir, PathBuf::from),
@@ -242,6 +273,12 @@ impl Config {
                 .map_or(d.shutdown_grace, Duration::from_secs),
             header_timeout: seconds("DIBIBEST_HEADER_TIMEOUT_SECS", d.header_timeout)?,
             request_timeout: seconds("DIBIBEST_REQUEST_TIMEOUT_SECS", d.request_timeout)?,
+            backup_dir,
+            backup_interval: match backup_hours {
+                None => d.backup_interval,
+                Some(h) => Duration::from_secs(h * 3_600),
+            },
+            backup_keep: backup_keep.unwrap_or(d.backup_keep),
             max_connections: match number("DIBIBEST_MAX_CONNECTIONS")? {
                 None => d.max_connections,
                 Some(n @ 1..=1_000_000) => to_usize("DIBIBEST_MAX_CONNECTIONS", n)?,
