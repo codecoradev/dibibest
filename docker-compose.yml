@@ -32,6 +32,10 @@ services:
     environment:
       DIBIBEST_TRUSTED_PROXIES: "2" # Cloudflare in front of Traefik. Use 1 for Traefik alone, 0 for no proxy.
       DIBIBEST_SHUTDOWN_GRACE_SECS: "20"
+      # Scheduled backups into the host directory mounted below. Remove these three lines to have none.
+      DIBIBEST_BACKUP_DIR: /backup
+      DIBIBEST_BACKUP_INTERVAL_HOURS: "24"
+      DIBIBEST_BACKUP_KEEP: "7"
       # DIBIBEST_RATE_PER_MINUTE: "600"
       # DIBIBEST_MAX_BODY_BYTES: "1048576"
       # RUST_LOG: info
@@ -40,6 +44,9 @@ services:
     # another project of ours. The database and the lock file live here.
     volumes:
       - dibibest-data:/data
+      # Backups go to a HOST directory, not to the volume they protect. It must exist and be writable for uid 10001
+      # (`mkdir backups && sudo chown 10001:10001 backups`), or the server refuses to start and says why.
+      - ./backups:/backup
 
     # Liveness; the image has the same check. It is repeated here so that this file shows what Docker looks at.
     healthcheck:

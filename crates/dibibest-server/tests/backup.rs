@@ -306,7 +306,12 @@ async fn the_scheduler_keeps_to_the_retention_it_was_given() {
         seen.len() >= 3
     })
     .await;
-    assert!(backups_in(out.path()).len() <= 2);
+    // the file that has just appeared is pruned a moment after it is renamed, so wait for that, not for the clock
+    until("only two are left", || backups_in(out.path()).len() <= 2).await;
+    assert!(
+        !backups_in(out.path()).contains(&seen[0]),
+        "the oldest of the three is the one that went"
+    );
     backup.stop().await;
 }
 

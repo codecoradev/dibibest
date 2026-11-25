@@ -118,11 +118,9 @@ pub fn parse_file_name(name: &str) -> Option<i64> {
     let n = |range: std::ops::Range<usize>| stamp[range].parse::<i64>().ok();
     let (y, m, d) = (n(0..4)?, n(4..6)?, n(6..8)?);
     let (h, mi, s) = (n(9..11)?, n(11..13)?, n(13..15)?);
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || h > 23 || mi > 59 || s > 59 {
-        return None;
-    }
     let t = days_from_civil(y, m, d) * 86_400 + h * 3_600 + mi * 60 + s;
-    // a day that does not exist (February 30) comes back as another day: refuse it
+    // The round trip is the whole check: a month 13, a day 31 of April, an hour 25 or a February 30 all come back
+    // from `file_name` as a different date, so they are refused here.
     (file_name(t) == name).then_some(t)
 }
 
