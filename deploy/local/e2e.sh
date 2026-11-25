@@ -148,7 +148,8 @@ fi
 proxy_5xx_check() {
   local logs lines n
   if ! logs=$($COMPOSE logs --since "$E2E_START" traefik 2>&1); then fail "$1" "the Traefik log could not be read"; return; fi
-  lines=$(printf '%s\n' "$logs" | grep -E '" 50[234] ' | grep -vE '/auth/callback.*" 502 ' || true)
+  # the status is the number right after the HTTP version; a later number in the line is Traefik's request counter
+  lines=$(printf '%s\n' "$logs" | grep -E 'HTTP/[0-9.]+" 50[234] ' | grep -vE '/auth/callback.*HTTP/[0-9.]+" 502 ' || true)
   n=$(printf '%s' "$lines" | grep -c . || true)
   if [ "$n" = 0 ]; then pass "$1"; else fail "$1" "$(printf '%s' "$lines" | head -3 | cut -c1-240)"; fi
 }
