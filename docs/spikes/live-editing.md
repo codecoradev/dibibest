@@ -126,7 +126,8 @@ Rebase cost was **not isolated**: the 484 of 600 rebased changes come from the c
 room with a 10 KB text and a window of 1000 ops costs about 1.1 MB more. That is about 1 KB per op **for ops that insert ten bytes**, and
 the delta also includes the store's page cache, the WAL and allocator slack, so read it as an upper bound for tiny edits. The window is
 bounded by op count (default 4096), **not by bytes**, and a kept op holds its inserted text: a window of agent-style whole-region
-replacements of about 240 KB each is hundreds of megabytes (4096 of them at the 1 MiB message limit would be 4 GiB). The real build needs
+replacements of about 240 KB each is gigabytes (a kept op holds its text as UTF-16, two bytes a unit: about 480 KB, so 4096 of them are about
+2 GB, and at the 1 MiB message limit up to about 8 GiB). The real build needs
 a byte bound on the window next to the count. The spike has no idle eviction, so every room ever opened stays.
 
 **Shutdown with an open socket:** `serve_until` returned after about 100 µs, with the connection still open: the upgraded session
@@ -152,9 +153,9 @@ alive). That is the gap the `UpgradeSlot` work in `src/lib.rs` is for; I did not
   both are easy to get wrong; the test client's strict "each durable frame is the next number" assertion found no violation, but it
   is the first thing a real client needs a test for.
 - **A resync can orphan an in-flight submit (found by review, not by a test).** A resync tells the client to drop what it had not had
-  confirmed, but the room never learns that a key was dropped. If a submit is already in the room's channel when the slow client's
-  resync is processed (a stuck reader that also types), the room accepts it later and sends only an `ack`, for a key the client has
-  forgotten; the test client ignores it as "a repeated ack", so the change never reaches the client, its version lags the log by one,
+  confirmed, but the room never learns that a key was dropped. A client that is behind (a stuck reader that also types) can send a
+  submit *before it has read the resync*: that submit reaches the room after the resync was processed, the room accepts it and sends
+  only an `ack`, for a key the client has by then forgotten; the test client ignores it as "a repeated ack", so the change never reaches the client, its version lags the log by one,
   and the next `op` trips the "no gap" check. No test has a client that both overflows and has a submit in flight. Fix for the real
   build: confirm the author by a normal `op` carrying the key (as the replay path already does) and drop the special `ack`, or treat an
   `ack` or `op` with a key the client does not know as a forced resync; and add that test.
@@ -297,70 +298,90 @@ updates and the synced version; the protocol maps onto it like this:
 
 ```ts
 // state of the client loop
-const keys = new WeakMap<object, string>()   // the key of each unconfirmed update: made once, so a resend repeats it
-let inflight: string | null = null           // the key of the submit on the wire, if any
+const myId = `me-${crypto.randomUUID()}`     // random: it never equals an actor name, so remote updates cannot look like ours
+let headKey: string | null = null            // the key of the FIRST unconfirmed update, made when it is first sent and kept until confirmed
+let inflight = false                         // is a submit for headKey on the wire
+let lastSeq = 0                              // the last durable frame applied (hello / op / ack / resync): they must come in order
+let replayUntil = 0                          // the room's seq at connect: the replay is over when lastSeq reaches it
 
+// `receiveUpdates` builds NEW update objects whenever a remote op arrives while a change is pending, so an update has no identity
+// across calls: the key belongs to "the head of the pending list", not to an object.
 function firstPending() { const [u] = sendableUpdates(view.state); return u }
+function askForResync() { ws.send(JSON.stringify({ type: 'resync_request' })) }   // not in the spike's protocol: see the changes listed below
 
 // connect
 const ws = new WebSocket(`/v1/live/${project}?since_seq=${getSyncedVersion(view.state)}`)  // omit on the first connect
-ws.onclose = () => { inflight = null }       // reconnect, read hello and the replay, then push() repeats the same key
+ws.onclose = () => { inflight = false }      // reconnect; headKey stays, so the resend repeats it
+
+function durable(seq: number): boolean {     // the next durable frame must be lastSeq + 1; a gap means something was lost
+  if (seq !== lastSeq + 1) { askForResync(); return false }
+  lastSeq = seq
+  return true
+}
 
 ws.onmessage = (e) => {
   const f = JSON.parse(e.data)
   switch (f.type) {
-    case 'hello':   // text !== null: rebuild the editor from f.text at f.seq
-                    // text === null: keep the editor; the missed ops follow
+    case 'hello':   // text !== null: rebuild the editor from f.text at f.seq. text === null: keep the editor; the missed ops follow
+      replayUntil = f.seq
       if (f.text !== null) rebuild(f.text, f.seq)
-      push()
+      pushWhenCaughtUp()
       break
     case 'op': {    // someone else's change, or our own seen again in a replay (same key)
-      const changes = ChangeSet.of(f.changes.map(([from, to, insert]) => ({ from, to, insert })), f.len)
-      const u = firstPending()
-      if (u && keys.get(u) === f.key) confirmed(f.key)               // our own change, replayed
-      else view.dispatch(receiveUpdates(view.state, [{ changes, clientID: f.actor }]))
+      if (!durable(f.seq)) break
+      if (f.key === headKey) confirmed()                              // our own change, replayed
+      else {
+        const changes = ChangeSet.of(f.changes.map(([from, to, insert]) => ({ from, to, insert })), f.len)
+        view.dispatch(receiveUpdates(view.state, [{ changes, clientID: f.actor }]))
+      }
+      pushWhenCaughtUp()
       break
     }
-    case 'ack':     // our change got number f.seq
-      confirmed(f.key)
+    case 'ack':     // our change got number f.seq (sent again, unchanged, for a retried key)
+      if (f.key !== headKey) break                                    // an ack for a key we no longer have: ignore it, the next op gap will say so
+      if (!durable(f.seq)) break
+      confirmed()
+      pushWhenCaughtUp()
       break
     case 'resync':  // the document is replaced: pending changes are gone (see below)
       rebuild(f.text, f.seq)
+      pushWhenCaughtUp()
       break
     case 'rejected':
-      if (f.code === 'too_old') break      // a resync follows
-      // refused / bad_change: the change cannot go in as it is. Show f.message, then rebuild from the synced text.
-      rebuild(syncedText(), getSyncedVersion(view.state))
+      if (f.code === 'too_old') break                                 // a resync follows
+      if (f.code === 'busy') { inflight = false; setTimeout(push, 250); break }   // nothing was written: send the same key again
+      // refused / bad_change / key_conflict: the change cannot go in as it is. Show f.message, then ask for the server's text.
+      askForResync()
       break
     case 'presence': case 'presence_left': /* update the remote cursors layer; ephemeral, no version */ break
   }
 }
 
-// confirmed: only if the first pending update is the one this key was made for, so a repeated or late ack does nothing
-function confirmed(key: string) {
+// our first pending update is the one the room has numbered: tell collab it is ours
+function confirmed() {
   const u = firstPending()
-  if (!u || keys.get(u) !== key) return
-  view.dispatch(receiveUpdates(view.state, [{ changes: u.changes, clientID: myId }]))
-  inflight = null
-  push()
+  if (u) view.dispatch(receiveUpdates(view.state, [{ changes: u.changes, clientID: myId }]))
+  headKey = null
+  inflight = false
 }
+
+function pushWhenCaughtUp() { if (lastSeq >= replayUntil) push() }
 
 // push: one change in flight, on the synced version
 function push() {
   const u = firstPending()
   if (!u || inflight) return
-  let key = keys.get(u)
-  if (!key) { key = `${myId}-${crypto.randomUUID()}`; keys.set(u, key) }
-  inflight = key
-  ws.send(JSON.stringify({ type: 'submit', key, base_seq: getSyncedVersion(view.state), changes: toTriples(u.changes) }))
+  headKey ??= `${myId}-${crypto.randomUUID()}`
+  inflight = true
+  ws.send(JSON.stringify({ type: 'submit', key: headKey, base_seq: getSyncedVersion(view.state), changes: toTriples(u.changes) }))
 }
 // view plugin: update(u) { if (u.docChanged) push() }
 
-// `@codemirror/collab` has no call that drops one unconfirmed update. A resync or a refusal means rebuilding the editor
-// state: a new EditorState with the synced document and a fresh `collab({startVersion})`, with `keys` and `inflight` reset.
-// What the person typed and had not had confirmed is lost unless the UI keeps it: compare the old text with the new document
-// and offer to re-apply the difference as a new change (a design question for the UI, not solved here).
-function rebuild(text: string, seq: number) { /* view.setState(EditorState.create({ doc: text, extensions: [..., collab({ startVersion: seq, clientID: myId })] })); keys = new WeakMap(); inflight = null */ }
+// `@codemirror/collab` has no call that drops one unconfirmed update. A resync means rebuilding the editor state: a new
+// EditorState with the synced document and a fresh `collab({startVersion})`, with `headKey` and `inflight` reset and `lastSeq = seq`.
+// What the person typed and had not had confirmed is lost unless the UI keeps it: compare the old text with the new document and
+// offer to re-apply the difference as a new change (a design question for the UI, not solved here).
+function rebuild(text: string, seq: number) { /* view.setState(EditorState.create({ doc: text, extensions: [..., collab({ startVersion: seq, clientID: myId })] })); headKey = null; inflight = false; lastSeq = seq */ }
 ```
 
 Notes: (1) `ChangeSet.of` needs the length of the document the change applies to; the spike's `op` has no `len`, which I would add. (2) CM's
@@ -369,11 +390,14 @@ unconfirmed updates, so the browser never needs its own transform; the Rust `tra
 (4) The tie rule must be the same in both: CM's `rebaseUpdates` maps the late change over the accepted ones with the accepted ones first,
 which is what `transform(accepted, late)` does here, but I have **not** run CodeMirror against this server; the first real task is a
 conformance test that feeds random concurrent changes to both implementations and compares texts. (5) Reconnect keeps the editor state
-(unconfirmed updates stay in `collab`'s state), reconnects with `since_seq = getSyncedVersion`, and resubmits the pending change with the same key (kept in `keys`) after the
-`hello` and the replay have been read. (6) A format/prettify assist that rewrites the whole text becomes one change per differing line
+(unconfirmed updates stay in `collab`'s state), reconnects with `since_seq = getSyncedVersion`, and resubmits the pending change with the same key (`headKey`) once the
+`hello` and the replay have been read (`pushWhenCaughtUp`). A resent change is built from the *current* head update, which may have been rebased
+over ops received meanwhile: the key names the intent, and the room answers a key it has already applied with the old `ack` whatever the content. (6) A format/prettify assist that rewrites the whole text becomes one change per differing line
 (the issue says "per-line edits"), which transforms well. (7) I could not check `receiveUpdates`, `sendableUpdates`,
-`getSyncedVersion` and `rebaseUpdates` against the library source: the review that checked `ChangeSet.of(specs, length)` and the tie rule
-had `@codemirror/state` but not `@codemirror/collab`. This sketch is a design, not a tested client.
+`getSyncedVersion` and `rebaseUpdates` against the library source myself: the first review checked `ChangeSet.of(specs, length)` and the tie rule
+against `@codemirror/state`, and a second one read the `@codemirror/collab` source and found that `receiveUpdates` builds new update objects (which
+is why the sketch keys the head of the pending list, not objects). This sketch is a design, not a tested client; it also needs a `resync_request`
+client frame and an `op` that carries `len`, which the spike's protocol does not have.
 
 ## Risks
 
@@ -383,7 +407,7 @@ had `@codemirror/state` but not `@codemirror/collab`. This sketch is a design, n
 - **One fsync per change per room** until the store can be pipelined; real-disk numbers are not known (see Measurements).
 - **Whole-text resync is the only recovery.** Fine at schema sizes; a project near the 1 MiB limit makes each resync expensive and each slow client a cost.
 - **Agents versus a person who leaves the text broken** (see above): a product decision for Stage 4, not a technical risk.
-- **Memory is per room and unbounded without eviction and without a byte bound on the window:** small for tiny edits (6 KB + about 1 KB per ten-byte op), large for big replacements (see Measurements).
+- **Memory is per room and unbounded without eviction and without a byte bound on the window:** small for tiny edits (6 KB + about 1 KB per ten-byte op), very large for big replacements (gigabytes at a full window; see Measurements).
 - **One process** is by design; a room is therefore a single point of ordering and of failure for its project. The log makes restart cheap (measured: restart test), a deploy drops the sockets, and clients must reconnect with `since_seq`.
 
 ## What the spike did not test
