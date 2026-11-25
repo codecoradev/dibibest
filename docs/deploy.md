@@ -49,7 +49,7 @@ deploy/local/run.sh --keep     # leave it running to try things by hand at http:
 ```
 
 It needs Docker with compose, `curl` and `python3`, and the ports 8088 and 9000 on `127.0.0.1`. Run on 2026-11-25
-(OrbStack, arm64): 67 checks, 67 passed (66 with `--fast`).
+(OrbStack, arm64): 68 checks, 68 passed (67 with `--fast`).
 
 What it does **not** show: the real Gatehouse (its metadata was fetched once, by hand, in the earlier checks of this
 page), TLS and Cloudflare, a real Claude connector, a real amd64 host, a real VPS disk. The check for idle connections
