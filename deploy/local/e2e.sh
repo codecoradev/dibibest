@@ -74,6 +74,7 @@ cp "$JAR4" "$JAR5"
 FIRSTCB=$(curl -s -o /dev/null -D - -b "$JAR4" -c "$JAR4" "$CB4" | tr -d '\r')
 expect_has "the first callback of a code signs in" "$FIRSTCB" "dibibest_session="
 REPLAY=$(curl -s -o /dev/null -D - -b "$JAR5" -c "$JAR5" "$CB4" | tr -d '\r')
+expect_eq "the provider's refusal of a used code is the server's own 502 (as in the TypeScript version)" "$(echo "$REPLAY" | head -1 | awk '{print $2}')" 502
 expect_not_has "the same callback replayed does not set a session" "$REPLAY" "dibibest_session=eyJ"
 expect_eq "...and the replaying browser is not signed in" "$(curl -s -b "$JAR5" "$BASE/auth/me" | jq_ "d['user']")" "None"
 rm -f "$JAR4" "$JAR5"
@@ -138,7 +139,8 @@ else
   done
   expect_eq "a POST after an idle pause of 12 s, three times" "$ok" 3
 fi
-BADLINES=$($COMPOSE logs --since "$E2E_START" traefik 2>&1 | grep -E '" 50[234] ' || true)
+# the refused code of section 2 is a 502 on /auth/callback that the SERVER sends on purpose; any other 5xx is a failure
+BADLINES=$($COMPOSE logs --since "$E2E_START" traefik 2>&1 | grep -E '" 50[234] ' | grep -v '/auth/callback' || true)
 BAD=$(printf '%s' "$BADLINES" | grep -c . || true)
 if [ "$BAD" = 0 ]; then pass "Traefik logged no 502, 503 or 504 since the checks began"; else fail "Traefik logged no 502, 503 or 504 since the checks began" "$(printf '%s' "$BADLINES" | head -3 | cut -c1-240)"; fi
 
