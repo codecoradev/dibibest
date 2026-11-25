@@ -15,7 +15,7 @@ name: Image
 #   GHCR_PUSH         `true` to push. Anything else, or unset, builds without pushing.
 #   IMAGE_PLATFORMS   what to build for, default `linux/amd64`. `linux/amd64,linux/arm64` builds both (the
 #                     second one under QEMU emulation, which is slow: expect an hour, and the build job's
-#                     time limit is 60 minutes).
+#                     time limit is 120 minutes).
 #
 # The Docker actions are pinned to a commit (the tag is in the comment): the publish job holds `packages: write`.
 # Dependabot's github-actions updates move the pins.
@@ -50,7 +50,7 @@ jobs:
   build:
     name: Build the image
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
         with:
@@ -75,7 +75,7 @@ jobs:
     # from another branch.
     if: ${{ vars.GHCR_PUSH == 'true' && github.ref == 'refs/heads/develop' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     permissions:
       contents: read
       packages: write
