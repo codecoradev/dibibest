@@ -188,7 +188,7 @@ would miss what is still in the `-wal` file.
 
 A backup file is a complete database. To use one, stop the server, move the current database aside, put the backup in
 its place, start the server again. Replace the file name in the second `docker run` with the backup you want
-(`ls backups`).
+(`sudo ls backups`: the directory is closed to other users).
 
 The steps are joined with `&&` on purpose: if one fails, the next does not run. In particular a failed copy must not be
 followed by starting the server, which would create a new, empty database. The first `docker run` moves the current
