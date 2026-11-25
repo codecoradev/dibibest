@@ -1,0 +1,13 @@
+# Routing for the local rehearsal: one host, one backend. The VPS uses Traefik with Docker labels (see docs/deploy.md);
+# a file keeps this rehearsal free of the Docker socket.
+http:
+  routers:
+    dibibest:
+      rule: "Host(`localhost`)"
+      entryPoints: [web]
+      service: dibibest
+  services:
+    dibibest:
+      loadBalancer:
+        servers:
+          - url: "http://dibibest:8080"

@@ -19,6 +19,42 @@ file. The image was also **built** for `linux/amd64` (not run on an amd64 host).
 **Not run:** the image on an amd64 host (the VPS is probably amd64), Traefik and Cloudflare in front, sign-in against Gatehouse, and any request with a real
 project (the API for projects does not exist yet).
 
+## Local rehearsal (run it before the VPS)
+
+`deploy/local/run.sh` starts the production shape on one machine and tests it from outside, the way a client on the
+internet would reach it:
+
+- **Traefik** on `http://localhost:8088` in front (one proxy, so `DIBIBEST_TRUSTED_PROXIES=1`), routing to
+- **the dibibest container**, built from the root `Dockerfile`, with the named volume `dibibest-local-data`, a host
+  directory `deploy/local/backups` for backups, and the same environment variables as the VPS (made-up values), next to
+- **a fake identity provider** (`deploy/local/idp.mjs`, Node, no dependencies) that speaks just enough OpenID Connect
+  for sign-in (discovery, authorization code with PKCE, token, userinfo, keys) and hands out ES256 access tokens for the
+  MCP endpoint. It is not Gatehouse and proves nothing about Gatehouse.
+
+`deploy/local/e2e.sh` then checks, through Traefik: the probes and the web app; the whole sign-in (login redirect with
+PKCE, callback, session, a forged state, a replayed code, logout from another origin refused); the MCP endpoint with
+real signed tokens (no token, wrong resource, wrong issuer, expired, made up; legacy and modern handshakes, `tools/list`,
+`convert_schema` with its fidelity report, the `Mcp-Name` header rule, the metadata documents, CORS); that the log has one
+line per call and never a token; that a POST after an idle pause still goes through and Traefik logs no 502; 150 parallel
+requests, the rate limit, and that a client writing its own `X-Forwarded-For` is limited all the same; the backup (made at
+start, a SQLite file, not readable by others); the container (unprivileged user, health check, a second container on the
+volume refused); `docker stop` (exit 0, within the grace period); and the restore of the Backups section on this very
+stack, after which the server is healthy again and answers MCP with a new token.
+
+```sh
+deploy/local/run.sh            # build, start, check, stop (a few minutes: the idle check waits 3 x 12 s)
+deploy/local/run.sh --fast     # without the waits
+deploy/local/run.sh --keep     # leave it running to try things by hand at http://localhost:8088
+```
+
+It needs Docker with compose, `curl` and `python3`, and the ports 8088 and 9000 on `127.0.0.1`. Run on 2026-11-25
+(OrbStack, arm64): 62 checks, 62 passed.
+
+What it does **not** show: the real Gatehouse (its metadata was fetched once, by hand, in the earlier checks of this
+page), TLS and Cloudflare, a real Claude connector, a real amd64 host, a real VPS disk. The check for idle connections
+shows that requests keep working after a pause; it does not provoke the race it guards against (a proxy sending a
+request on a connection the server closes at that very moment), which is rare and cannot be forced from outside.
+
 ## Base image
 
 The runtime image is `alpine:3.22` and the server is built on `rust:1.99-alpine3.22` for musl: the result is one static
