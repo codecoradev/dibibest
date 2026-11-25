@@ -516,6 +516,18 @@ mod permissions {
     }
 
     #[test]
+    fn a_file_that_is_not_a_backup_keeps_its_own_mode() {
+        let live = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let store = store_with_log(live.path());
+        let other = out.path().join("notes.txt");
+        std::fs::write(&other, b"not a backup").unwrap();
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o644)).unwrap();
+        run_once(&store, out.path(), 1_000_000, 7).unwrap();
+        assert_eq!(mode(&other), 0o644, "only backups are restricted");
+    }
+
+    #[test]
     fn the_write_test_leaves_nothing_behind_and_the_checked_directory_is_closed() {
         let out = tempfile::tempdir().unwrap();
         let dir = out.path().join("checked");
